@@ -152,13 +152,18 @@ static int32_t default_keypad_handler(lv_key_t key, lv_indev_state_t event)
 GIF文件存放于`multi-screen_gif\asset\common\gif`下。如果想修改GIF图片，需要先把GIF图片的分辨率改成128x128，以便于适应屏幕的大小，同时把需要替换的GIF图片删除，把新加入的GIF图片的名称改为需要替换的GIF图片名称。正常编译运行就可以实现更换GIF动画<br>
 
 ## 修改屏幕数量以及屏幕的排列顺序
-参考[屏驱修改](gc9107_Multi_screen\README.md)中针对屏幕数量修改以及屏幕的排列顺序修改等，明确描述如何接其他数量的屏幕需要如何改动，进行此例程扩展为其他数量屏幕的驱动。
+1. 如果需要修改屏幕数量以及屏幕排列顺序，特别是增加或者减少屏幕纵向的排列数量，需要修改LVGL内部的`LV_FB_LINE_NUM`参数，及FrameBuffer的行像素数据，应该小于等于当前屏幕纵向宽度，如：屏幕分辨率为256x128，则`LV_FB_LINE_NUM <= 128`。<br>
+2. 参考[屏驱修改](gc9107_Multi_screen\README.md)中针对屏幕数量修改以及屏幕的排列顺序修改等，明确描述如何接其他数量的屏幕需要如何改动，进行此例程扩展为其他数量屏幕的驱动。
 
 ## 演示视频
 下图是正常演示的效果视频和照片，可以看到六个屏幕同时显示不同的图片，并且显示不同的内容<br>
 根据[演示视频](https://www.bilibili.com/video/BV1LD8LzbELL/?vd_source=578afc404b2e128afdb532ff6943789d)查看演示效果。<br>
 显示图片如下：
 ![alt text](assets/screen.png)<br>
+
+## DMP查看图像
+如果屏幕出现异常如：花屏，不亮等情况，可以通过[数据转换为图像(BMP)的工具使用方法](https://docs.sifli.com/projects/sdk/latest/sf32lb52x/app_note/bin2bmp.html)查看如何使用脚本获取图像信息。
+本主要用于将原始二进制数据（bin）转换为标准位图图像（BMP）。其核心功能是将非图像格式的二进制数据（如像素数组、传感器数据等）解析并编码为可视化的BMP图像文件。
 
 ## 异常诊断
 ```{warning}

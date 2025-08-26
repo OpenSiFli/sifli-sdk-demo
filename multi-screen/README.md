@@ -84,3 +84,7 @@ ramless屏幕为了防止填充的时候，framebuffer被刷新，所以定义�
 1. 打开touch rt device，
 2. 设置触控中断触发函数tp_rx_indicate，去释放信号量
 3. 在while循环里面如果拿到了信号量，就去读取触控数据，并将其打印在串口上。
+
+## DMP查看图像
+如果屏幕出现异常如：花屏，不亮等情况，可以通过[数据转换为图像(BMP)的工具使用方法](https://docs.sifli.com/projects/sdk/latest/sf32lb52x/app_note/bin2bmp.html)查看如何使用脚本获取图像信息。
+本主要用于将原始二进制数据（bin）转换为标准位图图像（BMP）。其核心功能是将非图像格式的二进制数据（如像素数组、传感器数据等）解析并编码为可视化的BMP图像文件。

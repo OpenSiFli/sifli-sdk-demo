@@ -1,0 +1,13 @@
+Import('RTT_ROOT')
+Import('rtconfig')
+from building import *
+
+cwd = GetCurrentDir()
+src = ["main.c"]
+# moved to module folder
+src += ["./peripheral/rgbled.c"]
+CPPDEFINES=[]
+
+group = DefineGroup('Applications', src, depend = [''])
+
+Return('group')

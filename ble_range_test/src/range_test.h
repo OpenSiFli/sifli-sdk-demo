@@ -22,7 +22,8 @@ typedef enum
 
 typedef enum
 {
-    RANGE_TEST_LED_SEARCHING = 0, /* 未连接:TX=每秒双闪 / RX=1Hz 单次慢闪 */
+    RANGE_TEST_LED_SEARCHING = 0, /* 未扫到候选:TX=每秒双闪 / RX=1Hz 单次慢闪 */
+    RANGE_TEST_LED_CONNECTING,    /* TX 已扫到候选、正在 connect:呼吸渐变 (1Hz 三角波) */
     RANGE_TEST_LED_CONNECTED,     /* 已连接:常亮 */
 } range_test_led_state_t;
 

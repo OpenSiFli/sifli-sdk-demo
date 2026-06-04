@@ -15,6 +15,7 @@
 #include <rtthread.h>
 #include <rtdevice.h>
 #include <board.h>
+#include "drivers/rt_drv_pwm.h"
 #include "bf0_hal_lcpu_config.h"
 #include "lcpu_config_type.h"
 #include "mem_map.h"
@@ -28,21 +29,26 @@
     ((uint32_t)(((uint32_t)(is_bqb) << 24) | ((uint32_t)(uint8_t)(init) << 16) | \
                 ((uint32_t)(uint8_t)(min) << 8) | (uint8_t)(int8_t)(max)))
 
-/* 引脚(端口 A,使用 hwp_gpio1;Pin 号即 PAxx 编号,与 board.conf LED1_PIN=32 一致) */
+/* 跳线引脚(端口 A,使用 hwp_gpio1;Pin 号即 PAxx 编号) */
 #define PIN_ROLE     27
 #define PIN_PWR_10   26
 #define PIN_PWR_13   25
 #define PIN_PWR_16   24
-#define PIN_LED      32
 
 #define LED_TICK_MS    20
 #define TICKS_PER_SEC  (1000 / LED_TICK_MS) /* 50 */
+
+/* PWM: PA32 接 GPTIM2_CH1,SDK 设备名是 "pwm3" (drv 命名错位:pwmN→GPTIM(N-1)) */
+#define LED_PWM_DEV_NAME  "pwm3"
+#define LED_PWM_CHANNEL   1
+#define LED_PWM_PERIOD_NS 1000000   /* 1ms = 1kHz,远高于人眼闪烁融合频率 */
 
 static range_test_role_t                g_role       = RANGE_TEST_ROLE_TX;
 static int8_t                           g_tx_power   = 19;
 static volatile range_test_led_state_t  g_led_state  = RANGE_TEST_LED_SEARCHING;
 static rt_timer_t                       g_led_timer  = RT_NULL;
 static uint32_t                         g_led_tick   = 0;
+static struct rt_device_pwm            *g_led_pwm    = RT_NULL;
 
 /* 复用为 GPIO 输入下拉并读电平 */
 static int jumper_read(int pad, int func, int pin)
@@ -58,33 +64,47 @@ static int jumper_read(int pad, int func, int pin)
     return (HAL_GPIO_ReadPin(hwp_gpio1, pin) == GPIO_PIN_SET) ? 1 : 0;
 }
 
-static void led_write(int on)
+/* brightness 0..255 → PWM 占空比.PWM device 未初始化时直接返回. */
+static void led_set_brightness(uint8_t brightness)
 {
-    HAL_GPIO_WritePin(hwp_gpio1, PIN_LED, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    if (g_led_pwm == RT_NULL)
+        return;
+    rt_uint32_t pulse_ns = (rt_uint32_t)brightness * (LED_PWM_PERIOD_NS / 255);
+    rt_pwm_set(g_led_pwm, LED_PWM_CHANNEL, LED_PWM_PERIOD_NS, pulse_ns);
 }
 
 static void led_timer_cb(void *param)
 {
-    int on = 0;
+    uint8_t brightness = 0;
     uint32_t t = g_led_tick % TICKS_PER_SEC;   /* 0..49 */
     (void)param;
 
     switch (g_led_state)
     {
     case RANGE_TEST_LED_CONNECTED:
-        on = 1;
+        brightness = 255;
         break;
+
+    case RANGE_TEST_LED_CONNECTING:
+    {
+        /* 呼吸:三角波,2 秒一周期 (LED_TICK_MS=20ms → 100 ticks = 2s) */
+        uint32_t breath = g_led_tick % 100;
+        brightness = (breath < 50)
+                     ? (uint8_t)(breath * 255u / 50u)
+                     : (uint8_t)((100u - breath) * 255u / 50u);
+        break;
+    }
 
     case RANGE_TEST_LED_SEARCHING:
     default:
         if (g_role == RANGE_TEST_ROLE_RX)
-            on = (t < 5);                       /* RX: 1Hz 单闪 100ms */
+            brightness = (t < 5) ? 255 : 0;                          /* RX: 1Hz 单闪 100ms */
         else
-            on = (t < 5) || (t >= 10 && t < 15);/* TX: 双闪 100/100/100/700 */
+            brightness = ((t < 5) || (t >= 10 && t < 15)) ? 255 : 0; /* TX: 双闪 */
         break;
     }
 
-    led_write(on);
+    led_set_brightness(brightness);
     g_led_tick++;
 }
 
@@ -98,8 +118,6 @@ int8_t            range_test_get_tx_power(void) { return g_tx_power; }
 
 void range_test_io_init(void)
 {
-    GPIO_InitTypeDef init = {0};
-
     g_role = jumper_read(PAD_PA27, GPIO_A27, PIN_ROLE) ? RANGE_TEST_ROLE_RX
                                                        : RANGE_TEST_ROLE_TX;
 
@@ -112,12 +130,19 @@ void range_test_io_init(void)
     LOG_I("Range test boot: role=%s, tx_power=%ddBm",
           (g_role == RANGE_TEST_ROLE_RX) ? "RX(recv)" : "TX(send)", g_tx_power);
 
-    HAL_PIN_Set(PAD_PA32, GPIO_A32, PIN_NOPULL, 1);
-    init.Pin  = PIN_LED;
-    init.Mode = GPIO_MODE_OUTPUT;
-    init.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(hwp_gpio1, &init);
-    led_write(0);
+    /* PA32 切到 GPTIM2_CH1 PWM 模式;失败则 LED 静默(不影响 BLE 功能) */
+    HAL_PIN_Set(PAD_PA32, GPTIM2_CH1, PIN_NOPULL, 1);
+    g_led_pwm = (struct rt_device_pwm *)rt_device_find(LED_PWM_DEV_NAME);
+    if (g_led_pwm != RT_NULL)
+    {
+        rt_device_open((rt_device_t)g_led_pwm, RT_DEVICE_OFLAG_RDWR);
+        rt_pwm_set(g_led_pwm, LED_PWM_CHANNEL, LED_PWM_PERIOD_NS, 0);
+        rt_pwm_enable(g_led_pwm, LED_PWM_CHANNEL);
+    }
+    else
+    {
+        LOG_W("PWM device \"%s\" not found, LED disabled", LED_PWM_DEV_NAME);
+    }
     g_led_state = RANGE_TEST_LED_SEARCHING;
 
     g_led_timer = rt_timer_create("rt_led", led_timer_cb, RT_NULL,

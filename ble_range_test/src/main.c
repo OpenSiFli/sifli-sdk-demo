@@ -166,7 +166,7 @@ static void ble_app_advertising_start(void)
     para.own_addr_type = GAPM_STATIC_ADDR;
     para.config.adv_mode = SIBLES_ADV_CONNECT_MODE;
     para.config.mode_config.conn_config.duration = 0x0;
-    para.config.mode_config.conn_config.interval = 0x30;
+    para.config.mode_config.conn_config.interval = 0x21;   /* 33 * 0.625ms = 20.625ms (SDK 要求 > 20ms) */
     para.config.max_tx_pwr = 0x7F;
     para.config.is_auto_restart = 1;
 
@@ -481,6 +481,7 @@ static void range_tx_scan_decide(void)
     if (g_tx_have_candidate)
     {
         g_tx_connecting = 1;
+        range_test_led_set_state(RANGE_TEST_LED_CONNECTING);
         LOG_I("TX: connecting to strongest \"%s\" (rssi %d)...", RANGE_TEST_DEV_NAME, g_tx_best_rssi);
         range_test_connect(&g_tx_target);
     }
@@ -542,6 +543,7 @@ int ble_app_event_handler(uint16_t event_id, uint8_t *data, uint16_t len, uint32
             if (range_test_get_role() == RANGE_TEST_ROLE_TX)
             {
                 g_tx_connecting = 0;
+                range_test_led_set_state(RANGE_TEST_LED_SEARCHING);
                 range_test_scan_start();
             }
         }

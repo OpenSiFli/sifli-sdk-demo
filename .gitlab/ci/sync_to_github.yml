@@ -1,7 +1,9 @@
-# GitLab → GitHub 手动同步
+# GitLab → GitHub 同步
 #
-# 触发:GitLab UI → Build → Pipelines → Run pipeline,在变量里加 SYNC_GITHUB=1
-#   分支选要同步的(通常是 main),Pipeline 起来后点 sync_to_github job 的运行按钮。
+# 两种触发方式,都不需要手动加变量:
+#   1) 定时自动:Build → Pipeline schedules 建一条计划(cron 0 3 * * *,分支 main),
+#      到点自动把当前分支同步到 GitHub 同名分支。
+#   2) 一键手动:Build → Pipelines → Run pipeline,分支选 main,直接点 Run pipeline 即同步。
 #
 # 需要的 GitLab CI/CD Variables(Project Settings → CI/CD → Variables):
 #   GITHUB_DEPLOY_KEY  base64 编码的 SSH 私钥;对应公钥需加到 GitHub 仓库 Deploy keys 并勾选 Allow write access
@@ -45,7 +47,10 @@ sync_to_github:
     - git push github "HEAD:$TARGET_BRANCH" --force-with-lease
     - echo "✅ Sync to github:${GITHUB_REPO} branch $TARGET_BRANCH completed"
   rules:
-    # 必须 web 手动触发(GitLab UI Run pipeline)+ 设 SYNC_GITHUB=1 才会出现这个 job
-    - if: '$CI_PIPELINE_SOURCE == "web" && $SYNC_GITHUB'
-      when: manual
+    # 定时流水线(每天 3 点的 schedule):到点自动同步,无需任何点击或变量
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: always
+    # 网页触发(Run pipeline):点一下 Run pipeline 就同步,无需加变量
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: always
     - when: never

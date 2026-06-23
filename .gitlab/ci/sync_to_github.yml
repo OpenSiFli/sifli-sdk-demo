@@ -16,6 +16,10 @@ sync_to_github:
   image:
     name: alpine/git:latest
     entrypoint: [""]
+  # 钉死在 docker runner 上。不加 tags 时 job 会被任意 runner 抢走(包括跑不了
+  # alpine 镜像的 Windows powershell runner),导致 "SSL certificate" 或 shell 不兼容报错。
+  tags:
+    - docker
   variables:
     GIT_STRATEGY: clone
     GIT_DEPTH: 0

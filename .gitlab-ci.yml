@@ -1,12 +1,9 @@
-# 只允许手动和定时触发(本仓库目前不跑构建,只用于按需把代码同步出去)
+# This repo has no build jobs; CI exists only to sync GitLab -> GitHub.
+# A pipeline is created on every push to main, and on manual web runs.
 workflow:
   rules:
-    - if: $CI_PIPELINE_SOURCE == "web"
-      when: always
-    - if: $CI_PIPELINE_SOURCE == "schedule"
-      when: always
-    - if: $CI_PIPELINE_SOURCE == "api"
-      when: always
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
     - when: never
 
 stages:

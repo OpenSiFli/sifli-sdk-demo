@@ -84,10 +84,15 @@ static uint8_t g_app_svc[ATT_UUID_128_LEN] = app_svc_uuid;
 #define RANGE_TEST_DEV_NAME "SIFLI_RANGE"
 #define RANGE_SCAN_WINDOW_10MS 200   /* 2s */
 
+/* reason 62 burst retry:断开后直接拿缓存地址再连,跳过重扫,
+ * 省掉 4-10s 的"再次扫到广告"延迟。次数到了再退回正常扫描路径。 */
+#define BURST_RETRY_MAX 5
+
 static volatile uint8_t g_tx_connecting = 0;
 static ble_gap_addr_t   g_tx_target;
 static int8_t           g_tx_best_rssi = -128;
 static uint8_t          g_tx_have_candidate = 0;
+static uint8_t          g_tx_burst_retry = 0;     /* reason 62 burst 计数 */
 static rt_timer_t       g_tx_scan_wdt = RT_NULL;
 
 static void range_test_scan_start(void);
@@ -166,7 +171,7 @@ static void ble_app_advertising_start(void)
     para.own_addr_type = GAPM_STATIC_ADDR;
     para.config.adv_mode = SIBLES_ADV_CONNECT_MODE;
     para.config.mode_config.conn_config.duration = 0x0;
-    para.config.mode_config.conn_config.interval = 0x21;   /* 33 * 0.625ms = 20.625ms (SDK 要求 > 20ms) */
+    para.config.mode_config.conn_config.interval = 0x20;   /* 32 * 0.625ms = 20ms (BLE spec 下限) */
     para.config.max_tx_pwr = 0x7F;
     para.config.is_auto_restart = 1;
 
@@ -447,24 +452,25 @@ static void range_test_scan_start(void)
     scan_param.dup_filt_pol = 0;
     scan_param.scan_param_1m.scan_intv = 0x60;
     scan_param.scan_param_1m.scan_wd = 0x30;
-    scan_param.duration = RANGE_SCAN_WINDOW_10MS;
+    scan_param.duration = 0;     /* 连续扫,见到匹配 ADV 才 scan_stop */
     scan_param.period = 0;
     ble_gap_scan_start(&scan_param);
-    range_tx_scan_wdt_start();
-    LOG_I("TX: scanning %dms for \"%s\" (pick strongest RSSI)...",
-          RANGE_SCAN_WINDOW_10MS * 10, RANGE_TEST_DEV_NAME);
+    LOG_I("TX: scanning continuously for \"%s\"...", RANGE_TEST_DEV_NAME);
 }
 
 static void range_test_connect(ble_gap_addr_t *peer)
 {
     ble_gap_connection_create_param_t cp = {0};
     cp.own_addr_type = GAPM_STATIC_ADDR;
-    cp.conn_to = 500;
+    /* burst retry 配套:init 端 1s 找不到对端就放弃,避免远距完全失联时卡 5s */
+    cp.conn_to = 100;   /* 100 * 10ms = 1s。回退:改回 500 (5s) */
     cp.type = GAPM_INIT_TYPE_DIRECT_CONN_EST;
     cp.conn_param_1m.scan_intv = 0x60;
     cp.conn_param_1m.scan_wd = 0x30;
-    cp.conn_param_1m.conn_intv_max = 0x18;   /* 24 * 1.25ms = 30ms */
-    cp.conn_param_1m.conn_intv_min = 0x18;
+    /* 拉距实验:把 conn_intv 从 30ms 缩到 7.5ms,让 sup_to 5s 内容忍丢失的 event 数从 166 提到 664,
+     * 试图救远距 transition 阶段。出问题回退:把 0x06 改回 0x18。 */
+    cp.conn_param_1m.conn_intv_max = 0x06;   /* 6 * 1.25ms = 7.5ms (BLE spec 下限) */
+    cp.conn_param_1m.conn_intv_min = 0x06;
     cp.conn_param_1m.conn_latency = 0;
     cp.conn_param_1m.supervision_to = 500;   /* 5s */
     cp.conn_param_1m.ce_len_max = 0x10;
@@ -482,7 +488,7 @@ static void range_tx_scan_decide(void)
     {
         g_tx_connecting = 1;
         range_test_led_set_state(RANGE_TEST_LED_CONNECTING);
-        LOG_I("TX: connecting to strongest \"%s\" (rssi %d)...", RANGE_TEST_DEV_NAME, g_tx_best_rssi);
+        LOG_I("TX: connecting to \"%s\" (rssi %d)...", RANGE_TEST_DEV_NAME, g_tx_best_rssi);
         range_test_connect(&g_tx_target);
     }
     else
@@ -554,15 +560,15 @@ int ble_app_event_handler(uint16_t event_id, uint8_t *data, uint16_t len, uint32
         ble_gap_ext_adv_report_ind_t *ind = (ble_gap_ext_adv_report_ind_t *)data;
         if (range_test_get_role() != RANGE_TEST_ROLE_TX || g_tx_connecting)
             break;
-        if (range_adv_match_name(ind->data, ind->length, RANGE_TEST_DEV_NAME))
+        /* 首次匹配即锁定,不挑 RSSI 最强;立刻 stop 扫触发 scan_decide → connect */
+        if (!g_tx_have_candidate
+            && range_adv_match_name(ind->data, ind->length, RANGE_TEST_DEV_NAME))
         {
-            if (!g_tx_have_candidate || ind->rssi > g_tx_best_rssi)
-            {
-                g_tx_best_rssi = ind->rssi;
-                g_tx_target = ind->addr;
-                g_tx_have_candidate = 1;
-                LOG_I("TX: candidate \"%s\" rssi %d", RANGE_TEST_DEV_NAME, ind->rssi);
-            }
+            g_tx_best_rssi = ind->rssi;
+            g_tx_target = ind->addr;
+            g_tx_have_candidate = 1;
+            LOG_I("TX: candidate \"%s\" rssi %d", RANGE_TEST_DEV_NAME, ind->rssi);
+            ble_gap_scan_stop();
         }
         break;
     }
@@ -619,6 +625,9 @@ int ble_app_event_handler(uint16_t event_id, uint8_t *data, uint16_t len, uint32
 
         LOG_I("Exchanged device %d MTU size: %d", idx, ind->mtu);
 
+        /* MTU 协商成功 = 链路真正可用,burst retry 计数清零 */
+        g_tx_burst_retry = 0;
+
         if (range_test_get_role() == RANGE_TEST_ROLE_TX)
             start_speed_test_search(ind->conn_idx);
         break;
@@ -634,11 +643,36 @@ int ble_app_event_handler(uint16_t event_id, uint8_t *data, uint16_t len, uint32
         sibles_unregister_remote_svc(ind->conn_idx, env->conn[idx].hdl_start, env->conn[idx].hdl_end, ble_app_gattc_event_handler);
 
         g_tx_sending = 0;
-        range_test_led_set_state(RANGE_TEST_LED_SEARCHING);
         if (range_test_get_role() == RANGE_TEST_ROLE_TX)
         {
             g_tx_connecting = 0;
-            range_test_scan_start();
+            /* reason 62 = LL_ERR_CONN_FAILED_TO_BE_ESTABLISHED
+             * 远距下 setup 阶段经常失败但对端仍在原位,拿缓存地址直接重试
+             * 比"回去做全广播扫描"快 4-10 秒。次数到了再退回扫描。 */
+            if (ind->reason == 62
+                && g_tx_have_candidate
+                && g_tx_burst_retry < BURST_RETRY_MAX)
+            {
+                g_tx_burst_retry++;
+                LOG_I("TX: reason 62 burst retry %u/%u (cached addr)",
+                      g_tx_burst_retry, BURST_RETRY_MAX);
+                g_tx_connecting = 1;
+                range_test_led_set_state(RANGE_TEST_LED_CONNECTING);
+                range_test_connect(&g_tx_target);
+            }
+            else
+            {
+                if (g_tx_burst_retry > 0)
+                    LOG_I("TX: burst exhausted, fall back to scan");
+                g_tx_burst_retry = 0;
+                g_tx_have_candidate = 0;
+                range_test_led_set_state(RANGE_TEST_LED_SEARCHING);
+                range_test_scan_start();
+            }
+        }
+        else
+        {
+            range_test_led_set_state(RANGE_TEST_LED_SEARCHING);
         }
         break;
     }

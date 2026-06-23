@@ -11,7 +11,11 @@
 #   SYNC_BRANCH        (可选)要同步的分支,默认用当前 pipeline 跑的分支 $CI_COMMIT_REF_NAME
 sync_to_github:
   stage: sync_to_github
-  image: alpine/git:latest
+  # alpine/git 的默认 entrypoint 是 git 本身,会把脚本当成 `git sh -c ...` 执行而报
+  # "git: 'sh' is not a git command"。清空 entrypoint,让 runner 用默认 shell 跑脚本。
+  image:
+    name: alpine/git:latest
+    entrypoint: [""]
   variables:
     GIT_STRATEGY: clone
     GIT_DEPTH: 0

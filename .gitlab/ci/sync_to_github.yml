@@ -1,0 +1,43 @@
+# GitLab → GitHub 手动同步
+#
+# 触发:GitLab UI → Build → Pipelines → Run pipeline,在变量里加 SYNC_GITHUB=1
+#   分支选要同步的(通常是 main),Pipeline 起来后点 sync_to_github job 的运行按钮。
+#
+# 需要的 GitLab CI/CD Variables(Project Settings → CI/CD → Variables):
+#   GITHUB_DEPLOY_KEY  base64 编码的 SSH 私钥;对应公钥需加到 GitHub 仓库 Deploy keys 并勾选 Allow write access
+#   GITHUB_REPO        目标仓库,格式 owner/repo,例:OpenSiFli/sifli-sdk-demo
+#   GIT_CI_USER_NAME   (可选)提交者名,默认 SiFli CI
+#   GIT_CI_USER_EMAIL  (可选)提交者邮箱,默认 ci@sifli.com
+#   SYNC_BRANCH        (可选)要同步的分支,默认用当前 pipeline 跑的分支 $CI_COMMIT_REF_NAME
+sync_to_github:
+  stage: sync_to_github
+  image: alpine/git:latest
+  variables:
+    GIT_STRATEGY: clone
+    GIT_DEPTH: 0
+  before_script:
+    # alpine/git 自带 ssh,但 base64/bash 不一定全;装齐工具
+    - apk add --no-cache openssh-client bash coreutils
+    # 启动 SSH agent 并加载 deploy 私钥
+    - eval $(ssh-agent -s)
+    - echo "$GITHUB_DEPLOY_KEY" | base64 -d | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+    - git config --global user.name  "${GIT_CI_USER_NAME:-SiFli CI}"
+    - git config --global user.email "${GIT_CI_USER_EMAIL:-ci@sifli.com}"
+  script:
+    - export TARGET_BRANCH="${SYNC_BRANCH:-$CI_COMMIT_REF_NAME}"
+    - echo "Source (GitLab) branch = $CI_COMMIT_REF_NAME"
+    - echo "Target (GitHub) branch = $TARGET_BRANCH @ $GITHUB_REPO"
+    - git remote add github "git@github.com:${GITHUB_REPO}.git" 2>/dev/null
+        || git remote set-url github "git@github.com:${GITHUB_REPO}.git"
+    # 拉一下目标,让 --force-with-lease 有基线
+    - git fetch github "$TARGET_BRANCH" || echo "(remote branch may not exist yet, ok)"
+    # 推送。--force-with-lease:如果有人在 GitHub 上动过这个分支,本次会失败而不是盲推
+    - git push github "HEAD:$TARGET_BRANCH" --force-with-lease
+    - echo "✅ Sync to github:${GITHUB_REPO} branch $TARGET_BRANCH completed"
+  rules:
+    # 必须 web 手动触发(GitLab UI Run pipeline)+ 设 SYNC_GITHUB=1 才会出现这个 job
+    - if: '$CI_PIPELINE_SOURCE == "web" && $SYNC_GITHUB'
+      when: manual
+    - when: never

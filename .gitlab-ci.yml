@@ -1,0 +1,16 @@
+# 只允许手动和定时触发(本仓库目前不跑构建,只用于按需把代码同步出去)
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: always
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      when: always
+    - if: $CI_PIPELINE_SOURCE == "api"
+      when: always
+    - when: never
+
+stages:
+  - sync_to_github
+
+include:
+  - local: '.gitlab/ci/sync_to_github.yml'

@@ -1,0 +1,9 @@
+{
+    "clangd.arguments": [
+        "--enable-config",
+        "--background-index",
+        "--pch-storage=disk",
+        "--query-driver=C:/Users/xiebo/.sifli/tools/arm-none-eabi-gcc/14.2.1/bin/arm-none-eabi-*",
+        "--compile-commands-dir=${workspaceFolder}/project/build_sf32lb52-core_n4_hcpu"
+    ]
+}

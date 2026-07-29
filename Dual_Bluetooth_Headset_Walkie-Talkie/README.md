@@ -193,3 +193,10 @@ intercom scan
 intercom connect 1
 intercom connect E2:56:30:0A:80:AC
 ```
+
+
+## 提交时的SDK信息：
+SDK branch: main
+SDK commit: 4407380ca5207436cdc60d747e7a96b4609e297b
+SDK version: 2.5.0
+Build target: sf32lb52-nano_n4_hcpu

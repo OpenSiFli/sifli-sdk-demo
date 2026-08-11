@@ -1,64 +1,79 @@
-# Hello World Example (RT-Thread)
+# camera_57x
 
-Source Code Path: example/get-started/hello_world/rtt
+`camera_57x` is a camera demo for the SF32LB57x SPI HDK. It uses an
+Arducam OV2640 module with an on-board FIFO, reads JPEG frames through SPI2,
+uses PA34 ADC keys for camera controls, and saves photos through J4
+(SDMMC2 / `sd1`).
 
-## Overview
-The Hello_world application will print "hello world!" on the board's serial port.
+Target board: `sf32lb57-spi-hdk_n16r4`.
 
-## Usage
+The project is pinned to this local SiFli SDK revision:
+`e72ab9e761caebe707e95a06e613f1872301e9df`.
 
-### Supported Development Boards
-This example can run on the following development boards:
-- Any board (including `pc`)
+The SDK build target is `spi-hdk_lb573ub7n6`, which corresponds to the
+`sf32lb57-spi-hdk_n16r4` hardware configuration used by this project.
 
-### Compilation and Flashing
-Switch to the example project directory and run the scons command to compile:
-```
-scons --board=sf32lb52-lcd_n16r8 -j32
-```
+## Build
 
-For simulator:
-```
-scons --board=pc -j32
+```sh
+source /Users/wangmian/SiFli-SDK/main/export.sh
+scons -C camera_57x/project --board=spi-hdk_lb573ub7n6 -j8
 ```
 
-## Example Output
-If the example runs successfully, you will see the following output on the serial port:
-```
-Serial:c2,Chip:4,Package:3,Rev:3  Reason:00000000
+A successful build only proves that the firmware image was generated. Camera
+capture, SD-card access, and display operation still require on-board testing.
 
- \ | /
-- SiFli Corporation
- / | \     build on Jul 23 2025, 2.4.0 build 92567879
- 2020 - 2022 Copyright by SiFli team
-mount /dev sucess
-[I/drv.rtc] PSCLR=0x80000100 DivAI=128 DivAF=0 B=256
-[I/drv.rtc] RTC use LXT RTC_CR=00000001
+## Preview and photo capture
 
-[I/drv.rtc] Init RTC, wake = 0
+At startup, the firmware initializes the CO5300 display, Arducam OV2640, and
+PA34 ADC keys, then starts continuous preview. The OV2640 produces 640x480
+JPEG frames. SPI2 reads each frame from the module FIFO at 8 MHz in chunks;
+the software JPEG backend decodes the frame to RGB565, and EPIC rotates,
+scales, and center-crops it to fill the 390x450 display.
 
-[I/drv.audprc] init 00 ADC_PATH_CFG0 0x606
+Connect the module as follows: PA37/MOSI, PA38/MISO, PA39/SCLK, and PA40/CS.
+SCCB uses I2C1 on PA20/SDA and PA27/SCL.
 
-[I/drv.audprc] HAL_AUDPRC_Init res 0
+Preview uses two FIFO receive buffers and two stable JPEG buffers. While the
+display owns one stable frame, capture can continue into the other. When both
+stable buffers are unavailable, the oldest ready frame is dropped. The log
+prints capture period, frame-copy, and display timing every five seconds:
 
-[I/drv.audcodec] HAL_AUDCODEC_Init res 0
-
-[I/TOUCH] Regist touch screen driver, probe=1202611d
-call par CFG1(3313)
-
-fc 9, xtal 2000, pll 2067
-
-call par CFG1(3313)
-
-fc 7, xtal 2000, pll 1656
-
-Hello world!
-msh />Serial:c2,Chip:4,Package:3,Rev:3  Reason:00000000
+```text
+camera: captured=144 displayed=143 dropped=0 failed=0 fps=6.5 period=140.1 copy=26.1 display=152.7 ms
 ```
 
-## Troubleshooting
-No specific troubleshooting information available. For any issues, please submit an [issue](https://github.com/OpenSiFli/SiFli-SDK/issues) on GitHub.
+`period` sets the capture-rate limit; `copy` and `display` help identify time
+spent in the FIFO, PSRAM, JPEG decode, or LCD path. Actual values depend on the
+target board.
 
-## Reference Documentation
-- [SiFli-SDK Quick Start](https://docs.sifli.com/projects/sdk/latest/sf32lb52x/quickstart/index.html)
-- [SiFli-SDK Development Guide](https://docs.sifli.com/projects/sdk/latest/sf32lb52x/development/index.html)
+Press KEY1 to pause preview, switch the OV2640 to 1600x1200 JPEG, and save the
+FIFO data to the SD-card root as `/IMG_0001.JPG`, `/IMG_0002.JPG`, and so on.
+The save path validates JPEG SOI and EOI markers and always restores 640x480
+preview after completion or failure. KEY2 toggles the album, and KEY3 shows the
+next photo. The album starts with the highest-numbered `IMG_*.JPG`, pauses
+capture, and shows the filename at the bottom of the screen. The software
+decoder supports common baseline JPEG 4:2:2, 4:2:0, and 4:4:4 sampling; it
+shows `UNSUPPORTED` for progressive, corrupted, or files larger than 768 KiB.
+
+SDMMC2 remains in the verified one-bit configuration. The DAT1-DAT3 CRC issue
+seen in four-bit mode is tracked as a separate hardware issue.
+
+## Board diagnostics
+
+`diag` is intended only for hardware checks. While automatic preview is
+running, `diag camera` and `diag display` return `busy: camera app running` to
+avoid accessing DCMI or the LCD concurrently with the application.
+
+`diag display` verifies the 390x450 display with red, green, blue, and white
+color bars. `diag adc` reports ten PA34/`bat1` channel-6 samples; hold
+KEY1/KEY2/KEY3 separately and confirm clusters near 2970/2580/2190 mV without
+overlapping calibration ranges.
+
+`diag sd` mounts `sd1` at `/`, writes and reads `/.camera_57x_probe`, validates
+its content, and removes only that probe file. It never formats the card.
+`diag sd_stress` writes, reads, and validates a temporary 1 MiB file, then
+removes it.
+
+`proj.conf` selects the Arducam OV2640 backend. Normal operation starts from
+automatic preview at boot rather than `diag camera`.

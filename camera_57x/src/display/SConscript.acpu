@@ -1,0 +1,19 @@
+import os
+from building import *
+
+Import('SIFLI_SDK')
+
+cwd = GetCurrentDir()
+src_dir = str(Dir('.').srcnode().abspath)
+tjpgd_dir = os.path.normpath(os.path.join(src_dir, '../../third_party/tjpgd'))
+sources = [
+    'jpeg_rgb565_decoder.c',
+    'tjpgd_port.c',
+]
+
+group = DefineGroup(
+    'Camera ACPU JPEG Decoder', sources, depend=[''],
+    CPPPATH=[cwd, tjpgd_dir],
+    CPPDEFINES=['LV_USE_SJPG=1'],
+    CCFLAGS='-O2')
+Return('group')

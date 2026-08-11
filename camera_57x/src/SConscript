@@ -1,0 +1,21 @@
+import os
+from building import *
+
+Import('SIFLI_SDK')
+
+# Add source code
+display_src = Glob('display/*.c', exclude=[
+    'display/jpeg_rgb565_decoder.c',
+    'display/tjpgd_port.c',
+])
+src = (Glob('*.c') + Glob('app/*.c') + Glob('board/*.c') +
+       Glob('acpu/camera_acpu_client.c') +
+       Glob('acpu/camera_acpu_run_task.c') +
+       Glob('acpu/camera_acpu_checksum.c') +
+       Glob('camera/*.c') + display_src + Glob('input/*.c') +
+       Glob('storage/*.c'))
+acpu_ctrl_dir = os.path.join(SIFLI_SDK, 'middleware/acpu_ctrl')
+group = DefineGroup('Applications', src, depend = [''],
+                    CPPPATH=[acpu_ctrl_dir])
+
+Return('group')

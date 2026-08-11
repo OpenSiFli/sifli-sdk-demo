@@ -1,0 +1,17 @@
+import os
+from building import *
+
+cwd = GetCurrentDir()
+objects = []
+
+Import('SIFLI_SDK')
+
+objects.extend(SConscript(os.path.join(cwd, '../src/acpu/SConscript'),
+                          variant_dir='main', duplicate=0))
+objects.extend(SConscript(os.path.join(cwd, '../src/display/SConscript.acpu'),
+                          variant_dir='jpeg_decode', duplicate=0))
+
+objects.extend(SConscript(os.path.join(SIFLI_SDK, 'SConscript'),
+                          variant_dir='sifli_sdk', duplicate=0))
+
+Return('objects')

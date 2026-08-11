@@ -1,0 +1,12 @@
+config BF0_HCPU
+    bool
+    default y
+
+config BF0_ACPU
+    bool
+    default y
+
+config CUSTOM_MEM_MAP
+    bool
+    select custom_mem_map
+    default y

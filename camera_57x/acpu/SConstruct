@@ -1,0 +1,15 @@
+import os
+import rtconfig
+
+SIFLI_SDK = os.getenv('SIFLI_SDK')
+if not SIFLI_SDK:
+    print('Please source export.sh in the SiFli SDK first.')
+    exit()
+from building import *
+
+PrepareEnv()
+SifliEnv()
+
+target = rtconfig.OUTPUT_DIR + rtconfig.TARGET_NAME + '.' + rtconfig.TARGET_EXT
+objects = PrepareBuilding(None)
+DoBuilding(target, objects)

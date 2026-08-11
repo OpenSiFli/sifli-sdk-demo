@@ -1,0 +1,10 @@
+#ifndef CAMERA_TJPGDCNF_H
+#define CAMERA_TJPGDCNF_H
+
+#define JD_SZBUF        2048
+#define JD_FORMAT       1
+#define JD_USE_SCALE    1
+#define JD_TBLCLIP      1
+#define JD_FASTDECODE   1
+
+#endif

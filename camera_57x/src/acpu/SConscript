@@ -1,0 +1,16 @@
+from building import *
+
+cwd = GetCurrentDir()
+sources = [
+    'camera_acpu_checksum.c',
+    'camera_acpu_clock.c',
+    'camera_acpu_worker.c',
+    'camera_jpeg_encoder.cpp',
+    'camera_jpegenc_port.cpp',
+]
+
+group = DefineGroup(
+    'Camera ACPU', sources, depend=[''],
+    CPPPATH=[cwd, cwd + '/../../third_party/jpegenc'],
+    CPPDEFINES=['JPEGENC_PORTABLE'])
+Return('group')

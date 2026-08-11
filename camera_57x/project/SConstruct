@@ -1,0 +1,40 @@
+import os
+import rtconfig
+
+# Check SDK
+SIFLI_SDK = os.getenv('SIFLI_SDK')
+if not SIFLI_SDK:
+    print("Please run set_env.bat in root folder of SIFLI SDK to set environment.")
+    exit()
+from building import *
+
+# Prepare environment.
+PrepareEnv()
+
+################################## change rtconfig.xxx to customize build ########################################
+
+# Add bootloader project
+AddBootLoader(SIFLI_SDK,rtconfig.CHIP)
+
+# Build the camera compute validation image for ACPU.
+AddChildProj('acpu', '../acpu', False, core="ACPU")
+
+# Set default compile options
+SifliEnv()
+
+TARGET = rtconfig.OUTPUT_DIR + rtconfig.TARGET_NAME + '.' + rtconfig.TARGET_EXT
+# Prepare building environment
+objs = PrepareBuilding(None)
+env = GetCurrentEnv()
+
+# Keep this conservative transfer-rate limit local to camera_57x.
+env.AppendUnique(CPPDEFINES=["SDIO_MAX_FREQ=1000000"])
+
+# Build application.
+DoBuilding(TARGET, objs)
+
+# Add flash table buld.
+AddFTAB(SIFLI_SDK,rtconfig.CHIP, env)
+
+# Generate download .bat script
+GenDownloadScript(env)

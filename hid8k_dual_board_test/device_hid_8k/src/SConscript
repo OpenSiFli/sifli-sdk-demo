@@ -1,0 +1,7 @@
+from building import *
+
+cwd = GetCurrentDir()
+src = ['hid8k_device_main.c']
+group = DefineGroup('Applications', src, CPPPATH=[cwd], depend=[''])
+
+Return('group')

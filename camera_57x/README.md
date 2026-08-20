@@ -4,6 +4,11 @@
 Arducam OV2640，通过 SPI2 读取 JPEG、PA34 ADC 快门控制，并通过
 J4（SDMMC2 / `sd1`）保存照片。
 
+图像后处理使用工程内的 `components/camera_software` 组件包：ISP、JPEG
+编解码和可选的 HCPU/ACPU 适配器可以独立配置和验证。当前默认应用仍走
+OV2640 FIFO-SPI JPEG 预览路径；OV2640 DVP/RGB565 直读、输入对比和调参
+分支暂不纳入默认工程。
+
 目标板：`sf32lb57-spi-hdk_n16r4`。
 
 本工程当前固定在本机完整 SiFli SDK 提交：
@@ -15,7 +20,7 @@ SDK 中的可编译板名为 `spi-hdk_lb573ub7n6`，它对应本项目所称的
 ## 构建
 
 ```sh
-source /Users/wangmian/SiFli-SDK/main/export.sh
+source /path/to/SiFli-SDK/export.sh
 scons -C camera_57x/project --board=spi-hdk_lb573ub7n6 -j8
 ```
 
@@ -52,3 +57,22 @@ JPEG 的 SOI/EOI 标记，保存成功或失败后都恢复 640×480 预览。KE
 
 当前 SDMMC2 保持实板已通过的一线模式。四线模式的 DAT1–DAT3 CRC 问题仍作为
 独立硬件问题处理，不在本阶段恢复。
+
+## 软件组件独立验证
+
+组件例程不依赖摄像头、显示屏或 SD 卡输入，使用内存中的确定性图像快速验证
+ISP、JPEG 和双核适配器。加载 SDK 环境后，在对应目录执行：
+
+```sh
+source /path/to/SiFli-SDK/export.sh
+scons -C camera_57x/components/camera_software/isp/example/project \
+      --board=spi-hdk_lb573ub7n6_hcpu
+scons -C camera_57x/components/camera_software/jpeg/example/project \
+      --board=spi-hdk_lb573ub7n6_hcpu
+scons -C camera_57x/components/camera_software/example/acpu/project/hcpu \
+      --board=spi-hdk_lb573ub7n6_hcpu
+```
+
+ISP 和 JPEG 例程烧录后分别输出 `status=PASS`；ACPU 例程需要双核板，并同时
+生成 HCPU 与 ACPU 镜像。详细 API、Kconfig 选项和内存约束见
+`camera_57x/components/camera_software/README.md`。

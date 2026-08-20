@@ -72,7 +72,7 @@ The ACPU worker's `acpu_main()` must be linked into the ACPU image. See
 [`example/acpu/README.md`](example/acpu/README.md) for its task IDs, capacity
 checks, timeout and JPEG decode scaling limit.
 
-## Source and License Audit
+## Example verification and license audit
 
 The JPEG component preserves strict separation between BitBank JPEGENC
 (`vendor/jpegenc`, `SOURCES-ENCODER.md`, Apache-2.0) and ChaN TJpgDec
@@ -80,12 +80,18 @@ The JPEG component preserves strict separation between BitBank JPEGENC
 own MIT license and source manifest. The JPEGENC upstream revision remains
 unrecorded, so external publication remains blocked.
 
-Run the offline suite from the repository root:
+Build each standalone example after activating the SDK environment:
 
 ```sh
-camera_57x/tests/run_isp_host_tests.sh
-python3 camera_57x/tests/test_camera_acpu_example_boundary.py
-python3 camera_57x/tests/test_camera_acpu_build_graph.py
 source /path/to/SiFli-SDK/export.sh
-python3 camera_57x/tests/test_camera_software_examples.py
+scons -C camera_57x/components/camera_software/isp/example/project \
+      --board=spi-hdk_lb573ub7n6_hcpu
+scons -C camera_57x/components/camera_software/jpeg/example/project \
+      --board=spi-hdk_lb573ub7n6_hcpu
+scons -C camera_57x/components/camera_software/example/acpu/project/hcpu \
+      --board=spi-hdk_lb573ub7n6_hcpu
 ```
+
+The ISP and JPEG examples print `status=PASS` when their deterministic
+in-memory fixtures complete. The ACPU example requires a dual-core board and
+must be flashed with both generated images.

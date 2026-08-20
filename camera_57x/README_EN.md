@@ -5,6 +5,13 @@ Arducam OV2640 module with an on-board FIFO, reads JPEG frames through SPI2,
 uses PA34 ADC keys for camera controls, and saves photos through J4
 (SDMMC2 / `sd1`).
 
+Image post-processing is provided by the in-project
+`components/camera_software` package. ISP, JPEG encoding/decoding, and the
+optional HCPU/ACPU adapter can be configured and verified independently. The
+default application currently uses the OV2640 FIFO-SPI JPEG preview path;
+OV2640 DVP/RGB565 capture, input comparison, and tuning branches are deferred
+and are not part of the default build.
+
 Target board: `sf32lb57-spi-hdk_n16r4`.
 
 The project is pinned to this local SiFli SDK revision:
@@ -16,7 +23,7 @@ The SDK build target is `spi-hdk_lb573ub7n6`, which corresponds to the
 ## Build
 
 ```sh
-source /Users/wangmian/SiFli-SDK/main/export.sh
+source /path/to/SiFli-SDK/export.sh
 scons -C camera_57x/project --board=spi-hdk_lb573ub7n6 -j8
 ```
 
@@ -58,3 +65,25 @@ shows `UNSUPPORTED` for progressive, corrupted, or files larger than 768 KiB.
 
 SDMMC2 remains in the verified one-bit configuration. The DAT1-DAT3 CRC issue
 seen in four-bit mode is tracked as a separate hardware issue.
+
+## Verify the software components independently
+
+The component examples use deterministic in-memory frames, so ISP, JPEG, and
+the dual-core adapter can be checked without a camera, display, or SD card.
+After activating the SDK environment, build the examples from the repository
+root:
+
+```sh
+source /path/to/SiFli-SDK/export.sh
+scons -C camera_57x/components/camera_software/isp/example/project \
+      --board=spi-hdk_lb573ub7n6_hcpu
+scons -C camera_57x/components/camera_software/jpeg/example/project \
+      --board=spi-hdk_lb573ub7n6_hcpu
+scons -C camera_57x/components/camera_software/example/acpu/project/hcpu \
+      --board=spi-hdk_lb573ub7n6_hcpu
+```
+
+The ISP and JPEG examples print `status=PASS` after flashing. The ACPU example
+requires a dual-core board and produces both HCPU and ACPU images. See
+`camera_57x/components/camera_software/README.md` for the public APIs, Kconfig
+options, and shared-buffer requirements.

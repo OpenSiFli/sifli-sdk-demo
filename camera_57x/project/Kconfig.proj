@@ -18,6 +18,14 @@ config CAMERA_SENSOR_ARDUCAM_OV2640
     select BSP_SPI2_TX_USING_DMA
 endchoice
 
+if CAMERA_SENSOR_ARDUCAM_OV2640
+
+comment "OV2640 direct RGB565 preview is temporarily unavailable"
+comment "This demo only supports JPEG over the ArduChip SPI FIFO."
+comment "No OV2640 DVP/parallel-camera backend is provided."
+
+endif
+
 rsource "../components/camera_software/Kconfig"
 
 config CUSTOM_MEM_MAP

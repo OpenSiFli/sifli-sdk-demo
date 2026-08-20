@@ -8,9 +8,10 @@ uses PA34 ADC keys for camera controls, and saves photos through J4
 Image post-processing is provided by the in-project
 `components/camera_software` package. ISP, JPEG encoding/decoding, and the
 optional HCPU/ACPU adapter can be configured and verified independently. The
-default application currently uses the OV2640 FIFO-SPI JPEG preview path;
-OV2640 DVP/RGB565 capture, input comparison, and tuning branches are deferred
-and are not part of the default build.
+default application currently uses the OV2640 FIFO-SPI JPEG preview path.
+There is no OV2640 DVP/parallel-camera backend or direct RGB565 preview from
+the ArduChip FIFO. Those unfinished, unvalidated paths, along with input
+comparison and tuning branches, are not part of the default build.
 
 Target board: `sf32lb57-spi-hdk_n16r4`.
 
@@ -87,3 +88,15 @@ The ISP and JPEG examples print `status=PASS` after flashing. The ACPU example
 requires a dual-core board and produces both HCPU and ACPU images. See
 `camera_57x/components/camera_software/README.md` for the public APIs, Kconfig
 options, and shared-buffer requirements.
+
+### RGB565 and OV2640 input paths
+
+`RGB565_BE` is the 16-bit pixel format used by post-processing and display.
+The default OV2640 path is "JPEG in the SPI FIFO -> software decode ->
+RGB565_BE -> ISP/EPIC/LCD". It is not direct RGB565 output from the OV2640.
+
+The deferred direct path would configure the OV2640 for VGA RGB565 and read a
+fixed-size frame through the ArduChip SPI FIFO. That is also not DVP. DVP is a
+parallel sensor-to-SoC DCMI interface, and this project does not provide an
+OV2640 backend for it. Menuconfig displays the unavailable state but does not
+offer either path as a selectable configuration.

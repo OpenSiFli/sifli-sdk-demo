@@ -6,8 +6,9 @@ J4（SDMMC2 / `sd1`）保存照片。
 
 图像后处理使用工程内的 `components/camera_software` 组件包：ISP、JPEG
 编解码和可选的 HCPU/ACPU 适配器可以独立配置和验证。当前默认应用仍走
-OV2640 FIFO-SPI JPEG 预览路径；OV2640 DVP/RGB565 直读、输入对比和调参
-分支暂不纳入默认工程。
+OV2640 FIFO-SPI JPEG 预览路径。当前没有 OV2640 DVP 并行采集后端，也没有
+ArduChip FIFO 直读 RGB565 预览；这两条未完成、未实板验证的路径，以及输入对比
+和调参分支均不纳入默认工程。
 
 目标板：`sf32lb57-spi-hdk_n16r4`。
 
@@ -76,3 +77,13 @@ scons -C camera_57x/components/camera_software/example/acpu/project/hcpu \
 ISP 和 JPEG 例程烧录后分别输出 `status=PASS`；ACPU 例程需要双核板，并同时
 生成 HCPU 与 ACPU 镜像。详细 API、Kconfig 选项和内存约束见
 `camera_57x/components/camera_software/README.md`。
+
+### RGB565 与 OV2640 输入路径
+
+此工程中的 `RGB565_BE` 是后处理与显示使用的 16-bit 像素格式。当前默认 OV2640
+路径为“SPI FIFO 中的 JPEG -> 软件解码 -> RGB565_BE -> ISP/EPIC/LCD”。它不等同于
+OV2640 直接输出 RGB565。
+
+后者原计划由 OV2640 输出 VGA RGB565，再通过 ArduChip 的 SPI FIFO 固定长度读取；
+它也不是 DVP。真正的 DVP 是传感器到 SoC DCMI 的并行数据接口，本工程尚未提供
+OV2640 的该接口后端。menuconfig 仅显示不可用状态，不能选择这些路径。

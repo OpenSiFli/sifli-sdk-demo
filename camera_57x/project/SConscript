@@ -6,7 +6,7 @@ objs = []
 list = os.listdir(cwd)
 
 # Add SDK
-Import('SIFLI_SDK')
+Import('SIFLI_SDK', 'CAMERA_SOFTWARE_ROOT')
 objs.extend(SConscript(os.path.join(SIFLI_SDK, 'SConscript'), variant_dir="sifli_sdk", duplicate=0))
 
 # Add application source code

@@ -58,22 +58,3 @@ shows `UNSUPPORTED` for progressive, corrupted, or files larger than 768 KiB.
 
 SDMMC2 remains in the verified one-bit configuration. The DAT1-DAT3 CRC issue
 seen in four-bit mode is tracked as a separate hardware issue.
-
-## Board diagnostics
-
-`diag` is intended only for hardware checks. While automatic preview is
-running, `diag camera` and `diag display` return `busy: camera app running` to
-avoid accessing DCMI or the LCD concurrently with the application.
-
-`diag display` verifies the 390x450 display with red, green, blue, and white
-color bars. `diag adc` reports ten PA34/`bat1` channel-6 samples; hold
-KEY1/KEY2/KEY3 separately and confirm clusters near 2970/2580/2190 mV without
-overlapping calibration ranges.
-
-`diag sd` mounts `sd1` at `/`, writes and reads `/.camera_57x_probe`, validates
-its content, and removes only that probe file. It never formats the card.
-`diag sd_stress` writes, reads, and validates a temporary 1 MiB file, then
-removes it.
-
-`proj.conf` selects the Arducam OV2640 backend. Normal operation starts from
-automatic preview at boot rather than `diag camera`.

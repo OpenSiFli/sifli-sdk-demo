@@ -18,6 +18,8 @@ config CAMERA_SENSOR_ARDUCAM_OV2640
     select BSP_SPI2_TX_USING_DMA
 endchoice
 
+rsource "../components/camera_software/Kconfig"
+
 config CUSTOM_MEM_MAP
     bool
 	select custom_mem_map

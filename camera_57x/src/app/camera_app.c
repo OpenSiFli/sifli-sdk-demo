@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../acpu/camera_acpu_client.h"
+#include "../image_processing/camera_image_processor.h"
 #include "camera_metrics.h"
 #ifdef CAMERA_SENSOR_ARDUCAM_OV2640
 #include "../camera/arducam_backend.h"
@@ -321,7 +321,7 @@ static void camera_app_save_photo(void)
         uint32_t encode_ms = 0U;
         uint32_t write_ms = 0U;
 
-        result = camera_acpu_encode_rgb565_be(
+        result = camera_image_encode_rgb565_be(
             frame.data, frame.width, frame.height, frame.width * 2U,
             &jpeg, &jpeg_size, &encode_ms);
         if (result == 0)
@@ -716,7 +716,7 @@ static int camera_app_stats_cmd(int argc, char **argv)
     hcpu_usage = cpu_get_usage();
     if (hcpu_usage >= 0.0f)
         hcpu_usage_x100 = (int32_t)(hcpu_usage * 100.0f);
-    (void)camera_acpu_query_cpu_usage(&acpu_usage_x100);
+    (void)camera_image_query_acpu_usage(&acpu_usage_x100);
 
     rt_kprintf("camera stats: window=%u ms\n", window_ms);
     rt_kprintf("camera stats: frames captured=%u displayed=%u "

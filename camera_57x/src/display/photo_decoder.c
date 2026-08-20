@@ -1,6 +1,6 @@
 #include "photo_decoder.h"
 
-#include "../acpu/camera_acpu_client.h"
+#include "../image_processing/camera_image_processor.h"
 #include "../camera/jpeg_info.h"
 
 static int photo_decoder_software_decode(const uint8_t *jpeg,
@@ -11,7 +11,7 @@ static int photo_decoder_software_decode(const uint8_t *jpeg,
                                          uint32_t *decode_ms)
 {
     jpeg_info_t info;
-    uint32_t elapsed_ms = 0U;
+    camera_sw_acpu_metrics_t metrics;
 
     if ((jpeg_info_parse(jpeg, jpeg_size, &info) != 0) ||
         (info.sof_marker != 0xc0U) || (info.components != 3U) ||
@@ -19,12 +19,12 @@ static int photo_decoder_software_decode(const uint8_t *jpeg,
          (info.sampling[0] != 0x22U)) ||
         (info.sampling[1] != 0x11U) || (info.sampling[2] != 0x11U))
         return PHOTO_DECODER_UNSUPPORTED;
-    if (camera_acpu_decode_jpeg(jpeg, jpeg_size, destination,
-                                destination_size, width, height,
-                                &elapsed_ms) != 0)
+    if (camera_image_decode_jpeg(jpeg, jpeg_size, destination,
+                                 destination_size, width, height,
+                                 0U, &metrics) != 0)
         return PHOTO_DECODER_UNSUPPORTED;
     if (decode_ms != 0)
-        *decode_ms = elapsed_ms;
+        *decode_ms = metrics.isp.decode_ms;
     return PHOTO_DECODER_OK;
 }
 

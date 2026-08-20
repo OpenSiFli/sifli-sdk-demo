@@ -1,0 +1,26 @@
+from building import *
+import os
+
+cwd = GetCurrentDir()
+sources = []
+paths = [cwd + '/include']
+defines = []
+try:
+    Import('CAMERA_SW_JPEG_ENCODER', 'CAMERA_SW_JPEG_DECODER')
+except Exception:
+    CAMERA_SW_JPEG_ENCODER = GetDepend(['CAMERA_SW_JPEG_ENCODER'])
+    CAMERA_SW_JPEG_DECODER = GetDepend(['CAMERA_SW_JPEG_DECODER'])
+
+if CAMERA_SW_JPEG_ENCODER:
+    sources += ['src/encoder/camera_sw_jpeg_encoder.cpp',
+                'vendor/jpegenc/JPEGENC.cpp']
+    paths += [os.path.join(cwd, 'vendor/jpegenc')]
+    defines += ['JPEGENC_PORTABLE']
+if CAMERA_SW_JPEG_DECODER:
+    sources += ['src/decoder/camera_sw_jpeg_decoder.c', 'vendor/tjpgd/tjpgd.c']
+    paths += [os.path.join(cwd, 'vendor/tjpgd')]
+    defines += ['LV_USE_SJPG=1']
+
+group = DefineGroup('Camera Software JPEG', sources, depend=[],
+                    CPPPATH=paths, CPPDEFINES=defines, CCFLAGS='-O2')
+Return('group')

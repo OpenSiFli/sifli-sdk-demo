@@ -1,0 +1,9 @@
+# ChaN TJpgDec Decoder Source Manifest
+
+| component | path | upstream | revision | license | copyright | local_changes | license_file |
+|---|---|---|---|---|---|---|---|
+| jpeg_decoder | components/camera_software/jpeg/include/camera_sw_jpeg_decoder.h | project-local TJpgDec API | ChaN TJpgDec R0.03; local SHA-256 028734f106bf16dc5747f12dd87e7089a33c8f3f4707a47234651f7670d64f72 | LicenseRef-ChaN-TJpgDec | ChaN | Caller-owned decoder contract | components/camera_software/jpeg/LICENSES/tjpgd/tjpgd-license.txt |
+| jpeg_decoder | components/camera_software/jpeg/src/decoder/camera_sw_jpeg_decoder.c | ChaN TJpgDec wrapper | ChaN TJpgDec R0.03; local SHA-256 09a8614fc6df9e834ca68d86ae29bef3dbfa3528245740855fcb283a6955a7fb | LicenseRef-ChaN-TJpgDec | ChaN | Reader integration and RGB565_BE output | components/camera_software/jpeg/LICENSES/tjpgd/tjpgd-license.txt |
+| jpeg_decoder | components/camera_software/jpeg/vendor/tjpgd/tjpgd.c | http://elm-chan.org/fsw/tjpgd/00index.html | ChaN TJpgDec R0.03; local SHA-256 304e7ae5c6ae3e7a7e79737e3369990060d620f33066a5f59572a614c1c16884 | LicenseRef-ChaN-TJpgDec | ChaN | Project configuration | components/camera_software/jpeg/LICENSES/tjpgd/tjpgd-license.txt |
+| jpeg_decoder | components/camera_software/jpeg/vendor/tjpgd/tjpgd.h | http://elm-chan.org/fsw/tjpgd/00index.html | ChaN TJpgDec R0.03; local SHA-256 aaa427726921e8a0d955bf56a26cf0bd47e2131214979a358c00aa68199ceebd | LicenseRef-ChaN-TJpgDec | ChaN | Project configuration | components/camera_software/jpeg/LICENSES/tjpgd/tjpgd-license.txt |
+| jpeg_decoder | components/camera_software/jpeg/vendor/tjpgd/tjpgdcnf.h | http://elm-chan.org/fsw/tjpgd/00index.html | ChaN TJpgDec R0.03; local SHA-256 a47a9708e5ae3dc8db637c0d7b445551f92cb80a7f41298cfc29862febab7165 | LicenseRef-ChaN-TJpgDec | ChaN; Camera project | Project configuration and SPDX metadata | components/camera_software/jpeg/LICENSES/tjpgd/tjpgd-license.txt |

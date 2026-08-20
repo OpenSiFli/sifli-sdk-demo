@@ -1,0 +1,10 @@
+config CAMERA_SW_JPEG_EXAMPLE_HCPU
+    bool
+    default y
+
+rsource "../../Kconfig"
+
+config CUSTOM_MEM_MAP
+    bool
+    select custom_mem_map
+    default y

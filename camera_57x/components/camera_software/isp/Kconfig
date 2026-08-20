@@ -1,0 +1,79 @@
+menu "Camera software ISP"
+
+choice
+    prompt "ISP pipeline"
+    default CAMERA_ISP_SOFTWARE if CAMERA_SW_ISP_EXAMPLE_HCPU
+    default CAMERA_ISP_SOFTWARE if CAMERA_SENSOR_GC032A
+    default CAMERA_ISP_HARDWARE if CAMERA_SENSOR_ARDUCAM_OV2640
+
+config CAMERA_ISP_HARDWARE
+    bool "Sensor hardware ISP only"
+
+config CAMERA_ISP_SOFTWARE
+    bool "Software ISP"
+endchoice
+
+config CAMERA_SW_ISP
+    bool
+    default y if CAMERA_ISP_SOFTWARE
+
+if CAMERA_ISP_SOFTWARE
+
+choice
+    prompt "Camera software ISP execution core"
+    default CAMERA_SW_ISP_RUN_ON_HCPU if CAMERA_SW_ISP_EXAMPLE_HCPU
+    default CAMERA_SW_ISP_RUN_ON_ACPU if BSP_USING_ACPU
+    default CAMERA_SW_ISP_RUN_ON_HCPU
+
+config CAMERA_SW_ISP_RUN_ON_HCPU
+    bool "HCPU"
+
+config CAMERA_SW_ISP_RUN_ON_ACPU
+    bool "ACPU"
+    depends on BSP_USING_ACPU
+
+endchoice
+
+config CAMERA_SW_ISP_GAMMA
+    bool "Base gamma correction"
+    default y
+    help
+      GC032A FLAT baseline: fixes mid-tone readability of the demosaiced
+      RGB565 input. Keep this enabled while the other software ISP stages are
+      still experimental on GC032A.
+
+config CAMERA_SW_ISP_AWB
+    bool "Software AWB"
+    help
+      [实验性/GC032A 待校准] Software AWB statistics and neutral-candidate
+      gray-world gains. Do not treat current GC032A output as calibrated until
+      indoor/outdoor same-input shooting passes.
+
+config CAMERA_SW_ISP_TONE
+    bool "Software tone mapping"
+    help
+      [实验性/GC032A 待校准] Global percentile tone LUT with fixed blend.
+      Parameters still require indoor/outdoor re-shooting on GC032A.
+
+config CAMERA_SW_ISP_VIVID
+    bool "Software vivid enhancement"
+    help
+      [实验性/GC032A 待校准] Mild-saturation CCM profile. Saturation matrix
+      still requires GC032A calibration confirmation.
+
+config CAMERA_SW_ISP_DITHER
+    bool "4x4 ordered RGB565 dithering"
+    default y
+    help
+      Applies deterministic 4x4 Bayer ordered dithering before final RGB565
+      quantization. It improves transformed gradients only; it cannot recover
+      color precision already lost by the sensor's RGB565 output.
+
+config CAMERA_ISP_COMPARE_DEBUG
+    bool "Temporary JPEG ISP comparison debug"
+
+config CAMERA_CONTINUOUS_PERF_LOG
+    bool "Continuously print preview performance"
+
+endif
+endmenu

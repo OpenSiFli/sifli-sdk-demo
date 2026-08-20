@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MIT
+import os
+from building import *
+
+Import('SIFLI_SDK', 'CAMERA_SOFTWARE_ROOT')
+
+cwd = GetCurrentDir()
+objects = []
+objects.extend(SConscript(os.path.join(SIFLI_SDK, 'SConscript'),
+                          variant_dir='sifli_sdk', duplicate=0))
+objects.extend(SConscript(os.path.join(cwd, '../../src/hcpu/SConscript'),
+                          variant_dir='src', duplicate=0))
+objects.extend(SConscript(
+    os.path.join(CAMERA_SOFTWARE_ROOT, 'example/acpu/hcpu/SConscript'),
+    variant_dir='camera_sw_acpu_hcpu', duplicate=0))
+objects.extend(SConscript(os.path.join(CAMERA_SOFTWARE_ROOT, 'isp/SConscript'),
+                          variant_dir='camera_sw_isp', duplicate=0))
+objects.extend(SConscript(os.path.join(CAMERA_SOFTWARE_ROOT, 'jpeg/SConscript'),
+                          variant_dir='camera_sw_jpeg', duplicate=0))
+Return('objects')

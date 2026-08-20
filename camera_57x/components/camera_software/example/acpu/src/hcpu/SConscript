@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: MIT
+from building import *
+
+group = DefineGroup('Camera Software ACPU Example', Glob('*.c'), depend=[''])
+Return('group')

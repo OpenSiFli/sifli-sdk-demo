@@ -1,0 +1,11 @@
+# ISP Component Source Manifest
+
+| component | path | upstream | revision | license | copyright | local_changes | license_file |
+|---|---|---|---|---|---|---|---|
+| isp | components/camera_software/isp/include/camera_sw_isp.h | OpenMV-derived portable ISP API | OpenMV 7d4dbf7ab2f00e7684e57dff7bd13812fd9210d7; local SHA-256 d0f4146c4b84ecb3ddbecafe03a83827002100726c93bcef645d2f70e1cd71ae | MIT | OpenMV, LLC. | Component-owned RGB565_BE frame descriptor and quantizer | components/camera_software/isp/LICENSES/MIT.txt |
+| isp | components/camera_software/isp/include/camera_sw_isp_pipeline.h | project-local ISP pipeline API | local SHA-256 5d51ac3c569f1d7e7fd2732a94d0e6b3607145254021a912bf45c94f31d57017 | MIT | Camera project | Core-neutral flags and result DTO | components/camera_software/isp/LICENSES/MIT.txt |
+| isp | components/camera_software/isp/src/camera_sw_isp.c | OpenMV-derived portable ISP | OpenMV 7d4dbf7ab2f00e7684e57dff7bd13812fd9210d7; local SHA-256 0507ba3371faa36404a3c4e5ae34f3783e6b0c97be5bfdb6c091c70c67d31dae | MIT | OpenMV, LLC. | Frame validation and Bayer quantizer | components/camera_software/isp/LICENSES/MIT.txt |
+| isp | components/camera_software/isp/src/camera_sw_isp_core.c | OpenMV RGB565 ISP subset | OpenMV 7d4dbf7ab2f00e7684e57dff7bd13812fd9210d7; local SHA-256 5a0843632eb533209a718d6cde53de27de6de81ef6b0291c2ae81d3f50cb023a | MIT | OpenMV, LLC. | RGB565_BE adaptation | components/camera_software/isp/LICENSES/MIT.txt |
+| isp | components/camera_software/isp/src/camera_sw_isp_filter.c | OpenMV RGB565 filter subset | OpenMV 7d4dbf7ab2f00e7684e57dff7bd13812fd9210d7; local SHA-256 3a26a380db8e4dbac6d3a325555ed1895eb7b7d1774d64c991dcac0395ed404d | MIT | OpenMV, LLC. | Caller-owned scratch wrapper | components/camera_software/isp/LICENSES/MIT.txt |
+| isp | components/camera_software/isp/src/camera_sw_isp_pipeline.c | project-local ISP pipeline | local SHA-256 036af5289dcbf0cb7914de3bf385c7a39eed72e4852babf3443c08fae2fe6402 | MIT | Camera project | Core-neutral composition and fused final quantization | components/camera_software/isp/LICENSES/MIT.txt |
+| isp | components/camera_software/isp/SConscript | project-local build metadata | local SHA-256 684c9d462d6ffb00f50a00b2d642f6c6a406a50dc3e619334968f8906b740c37 | MIT | Camera project | Component build entry | components/camera_software/isp/LICENSES/MIT.txt |

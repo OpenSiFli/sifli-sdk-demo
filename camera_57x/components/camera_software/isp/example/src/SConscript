@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: MIT
+import os
+from building import *
+
+Import('CAMERA_SW_ISP_ROOT')
+
+cwd = GetCurrentDir()
+sources = Glob('*.c')
+defines = []
+if (GetDepend(['CAMERA_SW_ISP']) and
+        GetDepend(['CAMERA_SW_ISP_RUN_ON_HCPU'])):
+    sources.extend(SConscript(os.path.join(CAMERA_SW_ISP_ROOT, 'SConscript'),
+                              variant_dir='camera_sw_isp', duplicate=0))
+    defines.append('CAMERA_SW_ISP_EXAMPLE_ENABLED')
+for symbol in ('CAMERA_SW_ISP_GAMMA', 'CAMERA_SW_ISP_AWB',
+               'CAMERA_SW_ISP_TONE', 'CAMERA_SW_ISP_VIVID',
+               'CAMERA_SW_ISP_DITHER'):
+    if GetDepend([symbol]):
+        defines.append(symbol)
+group = DefineGroup('Camera Software ISP Example', sources, depend=[''],
+                    CPPPATH=[os.path.join(CAMERA_SW_ISP_ROOT, 'include')],
+                    CPPDEFINES=defines)
+Return('group')

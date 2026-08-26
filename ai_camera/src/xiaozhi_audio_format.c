@@ -20,3 +20,9 @@ int ai_xiaozhi_audio_frame_samples(uint32_t sample_rate,
     *samples = (uint16_t)(value / 1000U);
     return 0;
 }
+
+int ai_xiaozhi_audio_should_log_frame(uint32_t frame_count)
+{
+    return frame_count == 1U ||
+           frame_count % AI_XIAOZHI_AUDIO_DIAGNOSTIC_INTERVAL_FRAMES == 0U;
+}

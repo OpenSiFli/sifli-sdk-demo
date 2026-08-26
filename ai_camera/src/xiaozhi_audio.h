@@ -6,6 +6,8 @@
 
 #include "xiaozhi_protocol.h"
 
+#define AI_XIAOZHI_AUDIO_WORKER_STACK_SIZE (32U * 1024U)
+
 typedef int (*ai_xiaozhi_audio_send_t)(void *context, const uint8_t *data,
                                        size_t size);
 

@@ -13,6 +13,7 @@
 
 #define AI_XIAOZHI_WS_HEADER_MAX 1024U
 #define AI_XIAOZHI_WS_TEXT_MAX 1024U
+#define AI_XIAOZHI_WS_TEXT_LOG_MAX 160U
 #define AI_XIAOZHI_WS_CONNECT_TIMEOUT_MS 15000U
 
 static wsock_state_t s_socket;
@@ -80,6 +81,12 @@ static err_t ai_xiaozhi_websocket_callback(int code, char *buffer, size_t size)
         }
         rt_memcpy(text, buffer, size);
         text[size] = '\0';
+        rt_kprintf("xiaozhi: server text (%u bytes): %.*s\n",
+                   (unsigned int)size,
+                   (int)(size < AI_XIAOZHI_WS_TEXT_LOG_MAX
+                             ? size
+                             : AI_XIAOZHI_WS_TEXT_LOG_MAX),
+                   text);
         if (ai_xiaozhi_parse_server_hello(text, &s_server_hello) == 0)
         {
             s_server_hello_received = RT_TRUE;

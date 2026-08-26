@@ -60,6 +60,10 @@ int main(void)
         "\"transport\":\"websocket\",\"audio_params\":{"
         "\"format\":\"opus\",\"sample_rate\":16000,"
         "\"channels\":2,\"frame_duration\":20}}";
+    static const char tts_start[] =
+        "{\"type\":\"tts\",\"state\":\"start\"}";
+    static const char tts_stop[] =
+        "{\"type\":\"tts\",\"state\":\"stop\"}";
     static const uint8_t address[] = {0x00U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U};
     static const uint8_t pan_address[] = {0xcdU, 0xabU, 0x78U,
                                           0x56U, 0x34U, 0x12U};
@@ -213,6 +217,18 @@ int main(void)
                "\"format\":\"pcm\",\"sample_rate\":24000,"
                "\"channels\":1,\"frame_duration\":60}}",
                &server) < 0);
+    assert(ai_xiaozhi_parse_server_event(tts_start) ==
+           AI_XIAOZHI_SERVER_EVENT_TTS_START);
+    assert(ai_xiaozhi_parse_server_event(tts_stop) ==
+           AI_XIAOZHI_SERVER_EVENT_TTS_STOP);
+    assert(ai_xiaozhi_parse_server_event("{\"type\":\"tts\","
+                                         "\"state\":\"sentence_start\"}") ==
+           AI_XIAOZHI_SERVER_EVENT_NONE);
+    assert(ai_xiaozhi_parse_server_event("{\"type\":\"stt\","
+                                         "\"text\":\"hello\"}") ==
+           AI_XIAOZHI_SERVER_EVENT_NONE);
+    assert(ai_xiaozhi_parse_server_event("not-json") ==
+           AI_XIAOZHI_SERVER_EVENT_NONE);
     assert(ai_xiaozhi_parse_mcp_vision_initialize(mcp_initialize, &vision) ==
            0);
     assert(strcmp(vision.endpoint.host, "vision.example.com") == 0);

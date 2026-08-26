@@ -16,6 +16,30 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 cc -std=c11 -Wall -Wextra -Werror \
    -I"$project_dir/src" \
+   "$test_dir/test_device_ui_state.c" \
+   "$project_dir/src/device_ui_state.c" \
+   -o "$build_dir/test_device_ui_state"
+"$build_dir/test_device_ui_state"
+
+cc -std=c11 -Wall -Wextra -Werror \
+   -I"$project_dir/src" \
+   "$test_dir/test_device_input_policy.c" \
+   "$project_dir/src/device_input_policy.c" \
+   -o "$build_dir/test_device_input_policy"
+"$build_dir/test_device_input_policy"
+
+clang -std=c11 -Wall -Wextra -Werror -ftrivial-auto-var-init=pattern \
+   -I"$test_dir/include" \
+   -I"$project_dir/src" \
+   -DADC_BUTTON_GROUP1_MAX_NUM=3 \
+   "$test_dir/test_device_input.c" \
+   "$project_dir/src/device_input.c" \
+   "$project_dir/src/device_input_policy.c" \
+   -o "$build_dir/test_device_input"
+"$build_dir/test_device_input"
+
+cc -std=c11 -Wall -Wextra -Werror \
+   -I"$project_dir/src" \
    "$test_dir/test_audio_loopback.c" \
    "$project_dir/src/audio_loopback.c" \
    -o "$build_dir/test_audio_loopback"

@@ -480,6 +480,33 @@ done:
     return result;
 }
 
+ai_xiaozhi_server_event_t ai_xiaozhi_parse_server_event(
+    const char *response)
+{
+    cJSON *root;
+    cJSON *type;
+    cJSON *state;
+    ai_xiaozhi_server_event_t event = AI_XIAOZHI_SERVER_EVENT_NONE;
+
+    if (response == NULL)
+        return event;
+    root = cJSON_Parse(response);
+    if (root == NULL)
+        return event;
+    type = cJSON_GetObjectItemCaseSensitive(root, "type");
+    state = cJSON_GetObjectItemCaseSensitive(root, "state");
+    if (cJSON_IsString(type) && cJSON_IsString(state) &&
+        strcmp(type->valuestring, "tts") == 0)
+    {
+        if (strcmp(state->valuestring, "start") == 0)
+            event = AI_XIAOZHI_SERVER_EVENT_TTS_START;
+        else if (strcmp(state->valuestring, "stop") == 0)
+            event = AI_XIAOZHI_SERVER_EVENT_TTS_STOP;
+    }
+    cJSON_Delete(root);
+    return event;
+}
+
 int ai_xiaozhi_parse_mcp_vision_initialize_request(
     const char *response, ai_xiaozhi_vision_capability_t *vision,
     char *session_id, size_t session_id_size, int *request_id)

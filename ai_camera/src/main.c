@@ -12,6 +12,9 @@
 #include "bt_pan_policy.h"
 #include "bt_connection_manager.h"
 #include "bts2_app_inc.h"
+#include "device_input.h"
+#include "device_ui.h"
+#include "xiaozhi_websocket.h"
 
 #define APP_QUEUE_DEPTH 16U
 #define APP_IP_POLL_MS 200U
@@ -30,6 +33,55 @@ static rt_bool_t s_peer_valid;
 static unsigned int s_retry_count;
 static unsigned int s_ip_poll_count;
 static app_state_t s_state = APP_BOOT;
+
+static void app_xiaozhi_event(ai_xiaozhi_event_t event, void *context)
+{
+    (void)context;
+    switch (event)
+    {
+    case AI_XIAOZHI_EVENT_READY:
+        device_ui_post(DEVICE_UI_EVENT_XIAOZHI_READY);
+        break;
+    case AI_XIAOZHI_EVENT_DISCONNECTED:
+        device_ui_post(DEVICE_UI_EVENT_XIAOZHI_DISCONNECTED);
+        break;
+    case AI_XIAOZHI_EVENT_ERROR:
+        device_ui_post(DEVICE_UI_EVENT_XIAOZHI_ERROR);
+        break;
+    case AI_XIAOZHI_EVENT_TTS_START:
+        device_ui_post(DEVICE_UI_EVENT_XIAOZHI_TTS_START);
+        break;
+    case AI_XIAOZHI_EVENT_TTS_STOP:
+        device_ui_post(DEVICE_UI_EVENT_XIAOZHI_TTS_STOP);
+        break;
+    default:
+        break;
+    }
+}
+
+static void app_ui_action(device_ui_action_t action, void *context)
+{
+    int result = 0;
+
+    (void)context;
+    switch (action)
+    {
+    case DEVICE_UI_ACTION_CONNECT_XIAOZHI:
+        result = ai_xiaozhi_connect_async();
+        break;
+    case DEVICE_UI_ACTION_LISTEN_START:
+        result = ai_xiaozhi_listen_start_request();
+        break;
+    case DEVICE_UI_ACTION_LISTEN_STOP:
+        result = ai_xiaozhi_listen_stop_request();
+        break;
+    case DEVICE_UI_ACTION_NONE:
+    default:
+        break;
+    }
+    if (result < 0)
+        device_ui_post(DEVICE_UI_EVENT_XIAOZHI_ERROR);
+}
 
 static int app_audio_write(void *context, const uint8_t *data,
                            uint32_t size)
@@ -180,6 +232,7 @@ static void app_handle_message(const app_message_t *message)
             rt_timer_stop(s_ip_timer);
             s_retry_count = 0U;
             s_state = app_state_next(s_state, APP_EVENT_PAN_READY);
+            device_ui_post(DEVICE_UI_EVENT_PAN_READY);
             rt_kprintf("learning: PAN ready, b0 has IPv4\n");
         }
         else if (++s_ip_poll_count >=
@@ -193,6 +246,7 @@ static void app_handle_message(const app_message_t *message)
         rt_timer_stop(s_connect_timer);
         rt_timer_stop(s_ip_timer);
         s_state = app_state_next(s_state, APP_EVENT_PAN_DOWN);
+        device_ui_post(DEVICE_UI_EVENT_PAN_DOWN);
         app_start_retry();
         break;
     default:
@@ -275,6 +329,12 @@ int main(void)
     if (s_connect_timer == RT_NULL || s_ip_timer == RT_NULL ||
         s_retry_timer == RT_NULL)
         return -RT_ENOMEM;
+
+    if (device_ui_start(app_ui_action, RT_NULL) < 0)
+        return -RT_ENOMEM;
+    if (device_input_start() < 0)
+        return -RT_ERROR;
+    ai_xiaozhi_set_event_callback(app_xiaozhi_event, RT_NULL);
 
     s_state = app_state_next(s_state, APP_EVENT_START);
     rt_kprintf("learning_camera_573 board=spi-hdk_lb573ub7n6 state=%d\n",

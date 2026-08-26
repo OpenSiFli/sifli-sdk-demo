@@ -1,0 +1,51 @@
+#ifndef AI_CAMERA_DEVICE_UI_STATE_H
+#define AI_CAMERA_DEVICE_UI_STATE_H
+
+typedef enum
+{
+    DEVICE_UI_OFFLINE = 0,
+    DEVICE_UI_CONNECTING,
+    DEVICE_UI_HOME,
+    DEVICE_UI_LISTENING,
+    DEVICE_UI_THINKING,
+    DEVICE_UI_SPEAKING,
+    DEVICE_UI_CAMERA_UNAVAILABLE,
+    DEVICE_UI_CONNECTION,
+    DEVICE_UI_ERROR,
+} device_ui_state_t;
+
+typedef enum
+{
+    DEVICE_UI_EVENT_NONE = 0,
+    DEVICE_UI_EVENT_PAN_READY,
+    DEVICE_UI_EVENT_PAN_DOWN,
+    DEVICE_UI_EVENT_XIAOZHI_READY,
+    DEVICE_UI_EVENT_XIAOZHI_DISCONNECTED,
+    DEVICE_UI_EVENT_XIAOZHI_ERROR,
+    DEVICE_UI_EVENT_XIAOZHI_TTS_START,
+    DEVICE_UI_EVENT_XIAOZHI_TTS_STOP,
+    DEVICE_UI_EVENT_KEY1_PRESSED,
+    DEVICE_UI_EVENT_KEY1_RELEASED,
+    DEVICE_UI_EVENT_KEY2_PRESSED,
+    DEVICE_UI_EVENT_KEY3_PRESSED,
+    DEVICE_UI_EVENT_KEY3_LONG_PRESSED,
+} device_ui_event_t;
+
+typedef enum
+{
+    DEVICE_UI_ACTION_NONE = 0,
+    DEVICE_UI_ACTION_CONNECT_XIAOZHI,
+    DEVICE_UI_ACTION_LISTEN_START,
+    DEVICE_UI_ACTION_LISTEN_STOP,
+} device_ui_action_t;
+
+typedef struct
+{
+    device_ui_state_t state;
+    device_ui_action_t action;
+} device_ui_transition_t;
+
+device_ui_transition_t device_ui_reduce(device_ui_state_t state,
+                                        device_ui_event_t event);
+
+#endif

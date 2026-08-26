@@ -48,6 +48,13 @@ typedef struct
     char token[AI_XIAOZHI_TOKEN_MAX];
 } ai_xiaozhi_vision_capability_t;
 
+typedef enum
+{
+    AI_XIAOZHI_SERVER_EVENT_NONE = 0,
+    AI_XIAOZHI_SERVER_EVENT_TTS_START,
+    AI_XIAOZHI_SERVER_EVENT_TTS_STOP,
+} ai_xiaozhi_server_event_t;
+
 int ai_xiaozhi_build_hello(char *out, size_t out_size);
 int ai_xiaozhi_build_listen_start(char *out, size_t out_size,
                                   const char *session_id);
@@ -73,6 +80,8 @@ int ai_xiaozhi_parse_activation_response(const char *response,
                                          ai_xiaozhi_activation_t *activation);
 int ai_xiaozhi_parse_server_hello(const char *response,
                                   ai_xiaozhi_server_hello_t *hello);
+ai_xiaozhi_server_event_t ai_xiaozhi_parse_server_event(
+    const char *response);
 int ai_xiaozhi_parse_mcp_vision_initialize(
     const char *response, ai_xiaozhi_vision_capability_t *vision);
 int ai_xiaozhi_parse_mcp_vision_initialize_request(

@@ -11,6 +11,5 @@ config CUSTOM_MEM_MAP
     select custom_mem_map
     default y
 
-config PSRAM_CACHE_WB
-    bool
-    default y
+# ACPU and HCPU exchange camera buffers through shared PSRAM.  Keep this
+# region write-through so an ACPU task cannot observe stale cache lines.

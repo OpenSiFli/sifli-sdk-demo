@@ -3,6 +3,7 @@ set -eu
 
 test_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 project_dir=$(CDPATH= cd -- "$test_dir/.." && pwd)
+sdk_dir=${SIFLI_SDK:-/Users/wangmian/SiFli-SDK/main}
 build_dir=$(mktemp -d "${TMPDIR:-/tmp}/ai-camera-tests.XXXXXX")
 trap 'rm -r "$build_dir"' EXIT
 
@@ -19,3 +20,13 @@ cc -std=c11 -Wall -Wextra -Werror \
    "$project_dir/src/audio_loopback.c" \
    -o "$build_dir/test_audio_loopback"
 "$build_dir/test_audio_loopback"
+
+cc -std=c11 -Wall -Wextra -Werror \
+   -I"$project_dir/src" \
+   -I"$test_dir/include" \
+   -I"$sdk_dir/external/cJSON-1.7.17" \
+   "$test_dir/test_xiaozhi_protocol.c" \
+   "$project_dir/src/xiaozhi_protocol.c" \
+   "$sdk_dir/external/cJSON-1.7.17/cJSON.c" \
+   -o "$build_dir/test_xiaozhi_protocol"
+"$build_dir/test_xiaozhi_protocol"

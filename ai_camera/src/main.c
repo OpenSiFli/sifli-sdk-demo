@@ -1,9 +1,12 @@
 #include <rtthread.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <lwip/ip_addr.h>
 #include <netdev.h>
 
+#include "audio_loopback.h"
+#include "audio_server.h"
 #include "app_state.h"
 #include "bf0_sibles.h"
 #include "bt_connection_manager.h"
@@ -37,6 +40,69 @@ static rt_bool_t s_peer_valid;
 static unsigned int s_retry_count;
 static unsigned int s_ip_poll_count;
 static app_state_t s_state = APP_BOOT;
+
+static int app_audio_write(void *context, const uint8_t *data,
+                           uint32_t size)
+{
+    return audio_write((audio_client_t)context, (uint8_t *)data, size);
+}
+
+static int app_audio_loopback_callback(audio_server_callback_cmt_t command,
+                                       void *context, uint32_t reserved)
+{
+    audio_client_t *client = context;
+
+    if (command == as_callback_cmd_data_coming && client != RT_NULL &&
+        *client != RT_NULL)
+    {
+        audio_server_coming_data_t *incoming =
+            (audio_server_coming_data_t *)reserved;
+
+        return ai_audio_loopback_forward(app_audio_write, *client,
+                                         incoming->data, incoming->data_len);
+    }
+    return 0;
+}
+
+static void ai_audio_loopback(int argc, char **argv)
+{
+    audio_parameter_t parameter = {0};
+    audio_client_t client = RT_NULL;
+    unsigned long seconds = 10U;
+
+    if (argc == 2)
+        seconds = strtoul(argv[1], RT_NULL, 10);
+    if (argc > 2 || seconds == 0U || seconds > 60U)
+    {
+        rt_kprintf("usage: ai_audio_loopback [1-60 seconds]\n");
+        return;
+    }
+
+    parameter.write_bits_per_sample = 16U;
+    parameter.write_channnel_num = 1U;
+    parameter.write_samplerate = 16000U;
+    parameter.write_cache_size = 2048U;
+    parameter.read_bits_per_sample = 16U;
+    parameter.read_channnel_num = 1U;
+    parameter.read_samplerate = 16000U;
+    parameter.read_cache_size = 0U;
+    parameter.read_which_mic = AUDIO_MIC0_ONLY;
+
+    audio_server_set_private_volume(AUDIO_TYPE_LOCAL_MUSIC, 5U);
+    client = audio_open(AUDIO_TYPE_LOCAL_MUSIC, AUDIO_TXRX, &parameter,
+                        app_audio_loopback_callback, &client);
+    if (client == RT_NULL)
+    {
+        rt_kprintf("audio: loopback open failed\n");
+        return;
+    }
+
+    rt_kprintf("audio: loopback %lu s, mic0 -> speaker\n", seconds);
+    rt_thread_mdelay((rt_int32_t)(seconds * 1000U));
+    audio_close(client);
+    rt_kprintf("audio: loopback stopped\n");
+}
+MSH_CMD_EXPORT(ai_audio_loopback, analog mic to speaker loopback);
 
 static void app_post(app_message_type_t type)
 {

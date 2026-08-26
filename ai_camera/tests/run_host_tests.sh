@@ -30,3 +30,11 @@ cc -std=c11 -Wall -Wextra -Werror \
    "$sdk_dir/external/cJSON-1.7.17/cJSON.c" \
    -o "$build_dir/test_xiaozhi_protocol"
 "$build_dir/test_xiaozhi_protocol"
+
+cc -std=c11 -Wall -Wextra -Werror \
+   -I"$project_dir/src" \
+   -I"$sdk_dir/middleware/bluetooth/service/bt/bt_finsh" \
+   "$test_dir/test_bt_pan_policy.c" \
+   "$project_dir/src/bt_pan_policy.c" \
+   -o "$build_dir/test_bt_pan_policy"
+"$build_dir/test_bt_pan_policy"

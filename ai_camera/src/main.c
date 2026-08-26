@@ -9,22 +9,12 @@
 #include "audio_server.h"
 #include "app_state.h"
 #include "bf0_sibles.h"
+#include "bt_pan_policy.h"
 #include "bt_connection_manager.h"
 #include "bts2_app_inc.h"
 
 #define APP_QUEUE_DEPTH 16U
 #define APP_IP_POLL_MS 200U
-
-typedef enum
-{
-    APP_MESSAGE_STACK_READY = 0,
-    APP_MESSAGE_BOND_READY,
-    APP_MESSAGE_CONNECT_PAN,
-    APP_MESSAGE_PAN_UP,
-    APP_MESSAGE_PAN_DOWN,
-    APP_MESSAGE_IP_POLL,
-    APP_MESSAGE_RETRY_PAN,
-} app_message_type_t;
 
 typedef struct
 {
@@ -174,7 +164,10 @@ static void app_handle_message(const app_message_t *message)
     case APP_MESSAGE_CONNECT_PAN:
     case APP_MESSAGE_RETRY_PAN:
         if (s_peer_valid)
+        {
+            rt_timer_stop(s_connect_timer);
             bt_interface_conn_ext(s_peer.addr, BT_PROFILE_PAN);
+        }
         break;
     case APP_MESSAGE_PAN_UP:
         s_ip_poll_count = 0U;
@@ -210,6 +203,10 @@ static void app_handle_message(const app_message_t *message)
 static int app_bt_notify(uint16_t type, uint16_t event_id,
                          uint8_t *data, uint16_t data_len)
 {
+    app_message_type_t message = app_bt_message_for_event(type, event_id);
+
+    if (message != APP_MESSAGE_NONE)
+        app_post(message);
     if (type == BT_NOTIFY_COMMON)
     {
         if (event_id == BT_NOTIFY_COMMON_BT_STACK_READY)
@@ -247,13 +244,6 @@ static int app_bt_notify(uint16_t type, uint16_t event_id,
             app_post(APP_MESSAGE_PAN_DOWN);
         }
     }
-    else if (type == BT_NOTIFY_PAN)
-    {
-        if (event_id == BT_NOTIFY_PAN_PROFILE_CONNECTED)
-            app_post(APP_MESSAGE_PAN_UP);
-        else if (event_id == BT_NOTIFY_PAN_PROFILE_DISCONNECTED)
-            app_post(APP_MESSAGE_PAN_DOWN);
-    }
     return 0;
 }
 
@@ -290,7 +280,7 @@ int main(void)
     rt_kprintf("learning_camera_573 board=spi-hdk_lb573ub7n6 state=%d\n",
                s_state);
 #ifdef BSP_BT_CONNECTION_MANAGER
-    bt_cm_set_profile_target(BT_CM_PAN, BT_LINK_PHONE, 0);
+    bt_cm_set_profile_target(BT_CM_HID, BT_LINK_PHONE, 1);
 #endif
     bt_interface_register_bt_event_notify_callback(app_bt_notify);
     sifli_ble_enable();

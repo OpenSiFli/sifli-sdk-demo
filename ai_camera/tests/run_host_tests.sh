@@ -23,6 +23,13 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 cc -std=c11 -Wall -Wextra -Werror \
    -I"$project_dir/src" \
+   "$test_dir/test_xiaozhi_audio_format.c" \
+   "$project_dir/src/xiaozhi_audio_format.c" \
+   -o "$build_dir/test_xiaozhi_audio_format"
+"$build_dir/test_xiaozhi_audio_format"
+
+cc -std=c11 -Wall -Wextra -Werror \
+   -I"$project_dir/src" \
    -I"$test_dir/include" \
    -I"$sdk_dir/external/cJSON-1.7.17" \
    "$test_dir/test_xiaozhi_protocol.c" \

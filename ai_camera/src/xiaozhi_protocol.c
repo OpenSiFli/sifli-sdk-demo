@@ -2,11 +2,13 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <limits.h>
 
 #include "cJSON.h"
 
 #define AI_XIAOZHI_HELLO                                                   \
     "{\"type\":\"hello\",\"version\":3,\"transport\":\"websocket\"," \
+    "\"features\":{\"mcp\":true},"                                  \
     "\"audio_params\":{\"format\":\"opus\",\"sample_rate\":16000,"   \
     "\"channels\":1,\"frame_duration\":60}}"
 
@@ -76,6 +78,28 @@ static int ai_xiaozhi_path_is_safe(const char *path)
     return 1;
 }
 
+static int ai_xiaozhi_boundary_is_safe(const char *boundary)
+{
+    const unsigned char *value = (const unsigned char *)boundary;
+    size_t size;
+
+    if (boundary == NULL)
+        return 0;
+    size = strlen(boundary);
+    if (size == 0U || size >= AI_XIAOZHI_MULTIPART_BOUNDARY_MAX)
+        return 0;
+    while (*value != '\0')
+    {
+        if (!((*value >= 'a' && *value <= 'z') ||
+              (*value >= 'A' && *value <= 'Z') ||
+              (*value >= '0' && *value <= '9') || *value == '-' ||
+              *value == '_'))
+            return 0;
+        ++value;
+    }
+    return 1;
+}
+
 static int ai_xiaozhi_text_is_safe(const char *text)
 {
     const unsigned char *value = (const unsigned char *)text;
@@ -89,6 +113,17 @@ static int ai_xiaozhi_text_is_safe(const char *text)
         ++value;
     }
     return 1;
+}
+
+static int ai_xiaozhi_json_integer(cJSON *item, uint32_t minimum,
+                                   uint32_t maximum, uint32_t *value)
+{
+    if (!cJSON_IsNumber(item) || item->valuedouble < (double)minimum ||
+        item->valuedouble > (double)maximum ||
+        item->valuedouble != (double)item->valueint || value == NULL)
+        return -1;
+    *value = (uint32_t)item->valueint;
+    return 0;
 }
 
 static char ai_xiaozhi_hex(uint8_t value)
@@ -144,6 +179,22 @@ int ai_xiaozhi_format_device_id(char *out, size_t out_size,
     return (int)offset;
 }
 
+int ai_xiaozhi_format_pan_device_id(char *out, size_t out_size,
+                                    const uint8_t pan_address[6])
+{
+    uint8_t address[6];
+
+    if (pan_address == NULL)
+        return -1;
+    address[0] = pan_address[1];
+    address[1] = pan_address[0];
+    address[2] = pan_address[3];
+    address[3] = pan_address[2];
+    address[4] = pan_address[5];
+    address[5] = pan_address[4];
+    return ai_xiaozhi_format_device_id(out, out_size, address);
+}
+
 int ai_xiaozhi_format_client_id(char *out, size_t out_size,
                                 const uint8_t digest[16])
 {
@@ -168,8 +219,16 @@ int ai_xiaozhi_build_activation_request(char *out, size_t out_size,
                                         const char *client_id)
 {
     static const char format[] =
-        "{\"version\":2,\"mac_address\":\"%s\",\"uuid\":\"%s\","
-        "\"chip_model_name\":\"sf32lb573\",\"board\":{"
+        "{\"version\":2,\"flash_size\":4194304,\"psram_size\":0,"
+        "\"minimum_free_heap_size\":123456,\"mac_address\":\"%s\","
+        "\"uuid\":\"%s\",\"chip_model_name\":\"sf32lb573\","
+        "\"chip_info\":{\"model\":1,\"cores\":2,\"revision\":0,"
+        "\"features\":0},\"application\":{\"name\":\"ai_camera\","
+        "\"version\":\"1.0.0\",\"compile_time\":\"2021-01-01T00:00:00Z\","
+        "\"idf_version\":\"SiFli-SDK\",\"elf_sha256\":\"\"},"
+        "\"partition_table\":[{\"label\":\"app\",\"type\":1,"
+        "\"subtype\":2,\"address\":10000,\"size\":100000}],"
+        "\"ota\":{\"label\":\"ota_0\"},\"board\":{"
         "\"type\":\"spi-hdk_lb573ub7n6\",\"mac\":\"%s\"}}";
     int written;
 
@@ -181,8 +240,26 @@ int ai_xiaozhi_build_activation_request(char *out, size_t out_size,
     return written < 0 || (size_t)written >= out_size ? -1 : written;
 }
 
-int ai_xiaozhi_parse_websocket_url(const char *url,
-                                   ai_xiaozhi_endpoint_t *endpoint)
+int ai_xiaozhi_format_content_length_header(char *out, size_t out_size,
+                                            size_t content_length)
+{
+    int written;
+
+    if (out == NULL || out_size == 0U)
+        return -1;
+    written = snprintf(out, out_size, "Content-Length: %lu\r\n",
+                       (unsigned long)content_length);
+    return written < 0 || (size_t)written >= out_size ? -1 : written;
+}
+
+int ai_xiaozhi_activation_http_status_ok(int status)
+{
+    return status == 200 ? 0 : -1;
+}
+
+static int ai_xiaozhi_parse_url(const char *url, const char *secure_scheme,
+                                const char *plain_scheme,
+                                ai_xiaozhi_endpoint_t *endpoint)
 {
     const char *authority;
     const char *authority_end;
@@ -193,15 +270,15 @@ int ai_xiaozhi_parse_websocket_url(const char *url,
     if (url == NULL || endpoint == NULL)
         return -1;
     memset(endpoint, 0, sizeof(*endpoint));
-    if (strncmp(url, "wss://", 6U) == 0)
+    if (strncmp(url, secure_scheme, strlen(secure_scheme)) == 0)
     {
-        authority = url + 6U;
+        authority = url + strlen(secure_scheme);
         endpoint->ssl_enabled = 1;
         endpoint->port = 443U;
     }
-    else if (strncmp(url, "ws://", 5U) == 0)
+    else if (strncmp(url, plain_scheme, strlen(plain_scheme)) == 0)
     {
-        authority = url + 5U;
+        authority = url + strlen(plain_scheme);
         endpoint->ssl_enabled = 0;
         endpoint->port = 80U;
     }
@@ -259,6 +336,18 @@ int ai_xiaozhi_parse_websocket_url(const char *url,
     return 0;
 }
 
+int ai_xiaozhi_parse_websocket_url(const char *url,
+                                   ai_xiaozhi_endpoint_t *endpoint)
+{
+    return ai_xiaozhi_parse_url(url, "wss://", "ws://", endpoint);
+}
+
+int ai_xiaozhi_parse_http_url(const char *url,
+                              ai_xiaozhi_endpoint_t *endpoint)
+{
+    return ai_xiaozhi_parse_url(url, "https://", "http://", endpoint);
+}
+
 int ai_xiaozhi_parse_activation_response(const char *response,
                                          ai_xiaozhi_activation_t *activation)
 {
@@ -310,4 +399,240 @@ int ai_xiaozhi_parse_activation_response(const char *response,
 done:
     cJSON_Delete(root);
     return result;
+}
+
+int ai_xiaozhi_parse_server_hello(const char *response,
+                                  ai_xiaozhi_server_hello_t *hello)
+{
+    ai_xiaozhi_server_hello_t parsed = {0};
+    cJSON *root;
+    cJSON *type;
+    cJSON *version;
+    cJSON *transport;
+    cJSON *session_id;
+    cJSON *audio_params;
+    cJSON *format;
+    cJSON *sample_rate;
+    cJSON *channels;
+    cJSON *frame_duration;
+    uint32_t value;
+    uint32_t version_value;
+    uint32_t channels_value;
+    int result = -1;
+
+    if (response == NULL || hello == NULL)
+        return -1;
+    root = cJSON_Parse(response);
+    if (root == NULL)
+        return -1;
+
+    type = cJSON_GetObjectItemCaseSensitive(root, "type");
+    version = cJSON_GetObjectItemCaseSensitive(root, "version");
+    transport = cJSON_GetObjectItemCaseSensitive(root, "transport");
+    session_id = cJSON_GetObjectItemCaseSensitive(root, "session_id");
+    audio_params = cJSON_GetObjectItemCaseSensitive(root, "audio_params");
+    format = audio_params == NULL
+                 ? NULL
+                 : cJSON_GetObjectItemCaseSensitive(audio_params, "format");
+    sample_rate = audio_params == NULL
+                      ? NULL
+                      : cJSON_GetObjectItemCaseSensitive(audio_params,
+                                                         "sample_rate");
+    channels = audio_params == NULL
+                   ? NULL
+                   : cJSON_GetObjectItemCaseSensitive(audio_params, "channels");
+    frame_duration = audio_params == NULL
+                         ? NULL
+                         : cJSON_GetObjectItemCaseSensitive(audio_params,
+                                                            "frame_duration");
+
+    if (!cJSON_IsString(type) || strcmp(type->valuestring, "hello") != 0 ||
+        ai_xiaozhi_json_integer(version, 1U, 3U, &version_value) < 0 ||
+        !cJSON_IsString(transport) ||
+        strcmp(transport->valuestring, "websocket") != 0 ||
+        !cJSON_IsString(format) || strcmp(format->valuestring, "opus") != 0 ||
+        ai_xiaozhi_copy_field(parsed.audio_format,
+                              sizeof(parsed.audio_format), format->valuestring,
+                              strlen(format->valuestring)) < 0 ||
+        ai_xiaozhi_json_integer(sample_rate, 8000U, 48000U, &parsed.sample_rate) <
+            0 ||
+        ai_xiaozhi_json_integer(channels, 1U, 2U, &channels_value) < 0)
+        goto done;
+    parsed.protocol_version = (uint8_t)version_value;
+    parsed.channels = (uint8_t)channels_value;
+    if (ai_xiaozhi_json_integer(frame_duration, 10U, 120U, &value) < 0)
+        goto done;
+    parsed.frame_duration = (uint16_t)value;
+    if (session_id != NULL)
+    {
+        if (!cJSON_IsString(session_id) ||
+            !ai_xiaozhi_session_id_is_safe(session_id->valuestring) ||
+            ai_xiaozhi_copy_field(parsed.session_id, sizeof(parsed.session_id),
+                                  session_id->valuestring,
+                                  strlen(session_id->valuestring)) < 0)
+            goto done;
+    }
+
+    *hello = parsed;
+    result = 0;
+done:
+    cJSON_Delete(root);
+    return result;
+}
+
+int ai_xiaozhi_parse_mcp_vision_initialize_request(
+    const char *response, ai_xiaozhi_vision_capability_t *vision,
+    char *session_id, size_t session_id_size, int *request_id)
+{
+    ai_xiaozhi_vision_capability_t parsed = {0};
+    cJSON *root;
+    cJSON *type;
+    cJSON *envelope_session_id;
+    cJSON *payload;
+    cJSON *jsonrpc;
+    cJSON *method;
+    cJSON *id;
+    cJSON *params;
+    cJSON *capabilities;
+    cJSON *vision_object;
+    cJSON *url;
+    cJSON *token;
+    uint32_t parsed_request_id;
+    int result = -1;
+
+    if (response == NULL || vision == NULL ||
+        (session_id != NULL && session_id_size == 0U) ||
+        (session_id == NULL && session_id_size != 0U))
+        return -1;
+    root = cJSON_Parse(response);
+    if (root == NULL)
+        return -1;
+    type = cJSON_GetObjectItemCaseSensitive(root, "type");
+    envelope_session_id = cJSON_GetObjectItemCaseSensitive(root, "session_id");
+    payload = cJSON_GetObjectItemCaseSensitive(root, "payload");
+    jsonrpc = payload == NULL ? NULL :
+              cJSON_GetObjectItemCaseSensitive(payload, "jsonrpc");
+    method = payload == NULL ? NULL :
+             cJSON_GetObjectItemCaseSensitive(payload, "method");
+    id = payload == NULL ? NULL :
+         cJSON_GetObjectItemCaseSensitive(payload, "id");
+    params = payload == NULL ? NULL :
+             cJSON_GetObjectItemCaseSensitive(payload, "params");
+    capabilities = params == NULL ? NULL :
+                   cJSON_GetObjectItemCaseSensitive(params, "capabilities");
+    vision_object = capabilities == NULL ? NULL :
+                    cJSON_GetObjectItemCaseSensitive(capabilities, "vision");
+    url = vision_object == NULL ? NULL :
+          cJSON_GetObjectItemCaseSensitive(vision_object, "url");
+    token = vision_object == NULL ? NULL :
+            cJSON_GetObjectItemCaseSensitive(vision_object, "token");
+
+    if (!cJSON_IsString(type) || strcmp(type->valuestring, "mcp") != 0 ||
+        !cJSON_IsString(envelope_session_id) ||
+        !ai_xiaozhi_session_id_is_safe(envelope_session_id->valuestring) ||
+        !cJSON_IsObject(payload) || !cJSON_IsString(jsonrpc) ||
+        strcmp(jsonrpc->valuestring, "2.0") != 0 || !cJSON_IsString(method) ||
+        strcmp(method->valuestring, "initialize") != 0 ||
+        ai_xiaozhi_json_integer(id, 0U, (uint32_t)INT_MAX,
+                                &parsed_request_id) < 0 ||
+        !cJSON_IsObject(params) || !cJSON_IsObject(capabilities) ||
+        !cJSON_IsObject(vision_object) || !cJSON_IsString(url) ||
+        ai_xiaozhi_parse_http_url(url->valuestring, &parsed.endpoint) < 0 ||
+        (token != NULL &&
+         (!cJSON_IsString(token) ||
+          (token->valuestring[0] != '\0' &&
+           (!ai_xiaozhi_text_is_safe(token->valuestring) ||
+            ai_xiaozhi_copy_field(parsed.token, sizeof(parsed.token),
+                                  token->valuestring,
+                                  strlen(token->valuestring)) < 0)))))
+        goto done;
+    if (session_id != NULL && ai_xiaozhi_copy_field(
+                                  session_id, session_id_size,
+                                  envelope_session_id->valuestring,
+                                  strlen(envelope_session_id->valuestring)) < 0)
+        goto done;
+    if (request_id != NULL)
+        *request_id = (int)parsed_request_id;
+    *vision = parsed;
+    result = 0;
+done:
+    cJSON_Delete(root);
+    return result;
+}
+
+int ai_xiaozhi_parse_mcp_vision_initialize(
+    const char *response, ai_xiaozhi_vision_capability_t *vision)
+{
+    return ai_xiaozhi_parse_mcp_vision_initialize_request(
+        response, vision, NULL, 0U, NULL);
+}
+
+int ai_xiaozhi_build_mcp_initialize_response(
+    char *out, size_t out_size, const char *session_id, int request_id)
+{
+    static const char format[] =
+        "{\"session_id\":\"%s\",\"type\":\"mcp\","
+        "\"payload\":{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{"
+        "\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},"
+        "\"serverInfo\":{\"name\":\"ai_camera\","
+        "\"version\":\"1.0.0\"}}}}";
+    int written;
+
+    if (out == NULL || out_size == 0U ||
+        !ai_xiaozhi_session_id_is_safe(session_id) || request_id < 0)
+        return -1;
+    written = snprintf(out, out_size, format, session_id, request_id);
+    return written < 0 || (size_t)written >= out_size ? -1 : written;
+}
+
+int ai_xiaozhi_build_multipart_prefix(char *out, size_t out_size,
+                                      const char *boundary,
+                                      const char *question)
+{
+    static const char format[] =
+        "--%s\r\n"
+        "Content-Disposition: form-data; name=\"question\"\r\n\r\n"
+        "%s\r\n"
+        "--%s\r\n"
+        "Content-Disposition: form-data; name=\"file\"; "
+        "filename=\"camera.jpg\"\r\n"
+        "Content-Type: image/jpeg\r\n\r\n";
+    int written;
+
+    if (out == NULL || out_size == 0U || !ai_xiaozhi_boundary_is_safe(boundary) ||
+        !ai_xiaozhi_text_is_safe(question))
+        return -1;
+    written = snprintf(out, out_size, format, boundary, question, boundary);
+    return written < 0 || (size_t)written >= out_size ? -1 : written;
+}
+
+int ai_xiaozhi_build_multipart_suffix(char *out, size_t out_size,
+                                      const char *boundary)
+{
+    int written;
+
+    if (out == NULL || out_size == 0U || !ai_xiaozhi_boundary_is_safe(boundary))
+        return -1;
+    written = snprintf(out, out_size, "\r\n--%s--\r\n", boundary);
+    return written < 0 || (size_t)written >= out_size ? -1 : written;
+}
+
+int ai_xiaozhi_multipart_length(const char *question, size_t jpeg_size,
+                                const char *boundary)
+{
+    char prefix[512];
+    char suffix[AI_XIAOZHI_MULTIPART_BOUNDARY_MAX + 10U];
+    int prefix_size;
+    int suffix_size;
+
+    prefix_size = ai_xiaozhi_build_multipart_prefix(prefix, sizeof(prefix),
+                                                    boundary, question);
+    suffix_size = ai_xiaozhi_build_multipart_suffix(suffix, sizeof(suffix),
+                                                    boundary);
+    if (prefix_size < 0 || suffix_size < 0 ||
+        jpeg_size > (size_t)-1 - (size_t)prefix_size - (size_t)suffix_size)
+        return -1;
+    return jpeg_size + (size_t)prefix_size + (size_t)suffix_size > (size_t)INT_MAX
+               ? -1
+               : (int)(jpeg_size + (size_t)prefix_size + (size_t)suffix_size);
 }

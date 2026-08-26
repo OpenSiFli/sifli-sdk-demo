@@ -21,6 +21,14 @@ config LEARNING_CAMERA_PAN_RETRY_MAX
 
 endmenu
 
+config AI_CAMERA_OV2640_DVP_RESERVED
+    bool "Reserve OV2640 DVP camera interface"
+    default y
+    help
+      Reserve the OV2640 DVP integration point. SF32LB573 DVP capture is not
+      available in the current platform, so this option does not enable a
+      camera driver or claim preview support.
+
 config CUSTOM_MEM_MAP
     bool
     select custom_mem_map

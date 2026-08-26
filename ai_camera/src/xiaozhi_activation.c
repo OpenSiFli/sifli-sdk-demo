@@ -3,13 +3,58 @@
 #include <rtthread.h>
 
 #include <lwip/ip_addr.h>
+#include <lwip/tcpip.h>
 #include <mbedtls/sha256.h>
 #include <netdev.h>
 #include <webclient.h>
 
+#include "bts2_bt.h"
 #include "bf0_ble_common.h"
+#include "bf0_sys_cfg.h"
+#include "drv_flash.h"
+
+extern BTS2S_ETHER_ADDR bt_pan_get_mac_address(void);
 
 #define AI_XIAOZHI_OTA_URL "https://api.tenclass.net/xiaozhi/ota/"
+#define AI_XIAOZHI_HTTP_HEADER_SIZE 512U
+#define AI_XIAOZHI_ERROR_PREVIEW_MAX 256U
+
+/* Use the factory address when available, otherwise derive a stable address
+ * from the chip UID instead of exposing the SDK's placeholder address. */
+ble_common_update_type_t ble_request_public_address(bd_addr_t *addr)
+{
+    uint8_t factory_address[BD_ADDR_LEN] = {0};
+    uint8_t read_length;
+    int result;
+
+    if (addr == RT_NULL)
+        return BLE_UPDATE_NO_UPDATE;
+
+    read_length = rt_flash_config_read(FACTORY_CFG_ID_MAC, factory_address,
+                                       sizeof(factory_address));
+    if (read_length == 0U)
+    {
+        result = bt_mac_addr_generate_via_uid_v2(addr);
+        if (result != 0)
+        {
+            rt_kprintf("xiaozhi: UID MAC generation failed (%d)\n", result);
+            return BLE_UPDATE_NO_UPDATE;
+        }
+        /* Keep the generated address unicast. */
+        addr->addr[5] &= (uint8_t)~0x03U;
+    }
+    else if (read_length == sizeof(factory_address))
+    {
+        rt_memcpy(addr->addr, factory_address, sizeof(factory_address));
+    }
+    else
+    {
+        rt_kprintf("xiaozhi: invalid factory MAC length %u\n", read_length);
+        return BLE_UPDATE_NO_UPDATE;
+    }
+
+    return BLE_UPDATE_ONCE;
+}
 
 static int ai_xiaozhi_network_ready(void)
 {
@@ -22,14 +67,20 @@ static int ai_xiaozhi_network_ready(void)
 int ai_xiaozhi_get_identity(char *device_id, size_t device_id_size,
                             char *client_id, size_t client_id_size)
 {
-    bd_addr_t address = {0};
+    BTS2S_ETHER_ADDR pan_address = bt_pan_get_mac_address();
+    uint8_t raw_address[6];
     uint8_t digest[32];
 
+    raw_address[0] = (uint8_t)(pan_address.w[0] & 0xffU);
+    raw_address[1] = (uint8_t)(pan_address.w[0] >> 8U);
+    raw_address[2] = (uint8_t)(pan_address.w[1] & 0xffU);
+    raw_address[3] = (uint8_t)(pan_address.w[1] >> 8U);
+    raw_address[4] = (uint8_t)(pan_address.w[2] & 0xffU);
+    raw_address[5] = (uint8_t)(pan_address.w[2] >> 8U);
     if (device_id == RT_NULL || client_id == RT_NULL ||
-        ble_get_public_address(&address) != 0U ||
-        mbedtls_sha256_ret(address.addr, sizeof(address.addr), digest, 0) != 0 ||
-        ai_xiaozhi_format_device_id(device_id, device_id_size, address.addr) <
-            0 ||
+        mbedtls_sha256_ret(raw_address, sizeof(raw_address), digest, 0) != 0 ||
+        ai_xiaozhi_format_pan_device_id(device_id, device_id_size,
+                                        raw_address) < 0 ||
         ai_xiaozhi_format_client_id(client_id, client_id_size, digest) < 0)
         return -1;
     return 0;
@@ -39,40 +90,89 @@ int ai_xiaozhi_fetch_activation(ai_xiaozhi_activation_t *activation)
 {
     char device_id[AI_XIAOZHI_DEVICE_ID_MAX];
     char client_id[AI_XIAOZHI_CLIENT_ID_MAX];
-    char request[AI_XIAOZHI_ACTIVATION_REQUEST_MAX];
-    char headers[128];
+    char *request = RT_NULL;
     char *response = RT_NULL;
+    char content_length_header[AI_XIAOZHI_CONTENT_LENGTH_HEADER_MAX];
+    struct webclient_session *session = RT_NULL;
     size_t response_length = 0U;
     int request_length;
-    int header_length;
-    int result;
+    int result = -1;
 
     if (activation == RT_NULL || !ai_xiaozhi_network_ready() ||
         ai_xiaozhi_get_identity(device_id, sizeof(device_id), client_id,
                                 sizeof(client_id)) < 0)
         return -1;
 
+    request = rt_malloc(AI_XIAOZHI_ACTIVATION_REQUEST_MAX);
+    session = webclient_session_create(AI_XIAOZHI_HTTP_HEADER_SIZE);
+    if (request == RT_NULL || session == RT_NULL)
+        goto done;
     request_length = ai_xiaozhi_build_activation_request(
-        request, sizeof(request), device_id, client_id);
-    header_length = rt_snprintf(headers, sizeof(headers),
-                                "Device-Id: %s\r\nClient-Id: %s\r\n"
-                                "Content-Type: application/json\r\n",
-                                device_id, client_id);
-    if (request_length < 0 || header_length < 0 ||
-        (size_t)header_length >= sizeof(headers))
-        return -1;
+        request, AI_XIAOZHI_ACTIVATION_REQUEST_MAX, device_id, client_id);
+    if (request_length < 0 ||
+        webclient_header_fields_add(session, "Device-Id: %s\r\n", device_id) <=
+            0 ||
+        webclient_header_fields_add(session, "Client-Id: %s\r\n", client_id) <=
+            0 ||
+        webclient_header_fields_add(session, "Content-Type: application/json\r\n") <=
+            0 ||
+        ai_xiaozhi_format_content_length_header(
+            content_length_header, sizeof(content_length_header),
+            (size_t)request_length) < 0 ||
+        webclient_header_fields_add(session, "%s", content_length_header) <=
+            0)
+        goto done;
 
-    result = webclient_request(AI_XIAOZHI_OTA_URL, headers, request,
-                               (size_t)request_length, (void **)&response,
-                               &response_length);
-    if (result <= 0 || response == RT_NULL || response_length == 0U)
+    result = webclient_post(session, AI_XIAOZHI_OTA_URL, request,
+                            (size_t)request_length);
+    if (ai_xiaozhi_activation_http_status_ok(result) < 0)
     {
-        if (response != RT_NULL)
-            web_free(response);
-        return -1;
+        rt_kprintf("xiaozhi: activation HTTP status %d\n", result);
+        if (result > 0)
+        {
+            response_length = 0U;
+            response = RT_NULL;
+            if (webclient_response(session, (void **)&response,
+                                   &response_length) > 0 &&
+                response != RT_NULL)
+            {
+                char preview[AI_XIAOZHI_ERROR_PREVIEW_MAX];
+                size_t preview_length = response_length;
+
+                if (preview_length >= sizeof(preview))
+                    preview_length = sizeof(preview) - 1U;
+                rt_memcpy(preview, response, preview_length);
+                preview[preview_length] = '\0';
+                rt_kprintf("xiaozhi: activation response (%u bytes): %s\n",
+                           (unsigned int)response_length, preview);
+                web_free(response);
+                response = RT_NULL;
+            }
+        }
+        result = -1;
+        goto done;
+    }
+    result = webclient_response(session, (void **)&response, &response_length);
+    if (result <= 0 || response == RT_NULL)
+    {
+        rt_kprintf("xiaozhi: activation response empty\n");
+        goto done;
     }
     result = ai_xiaozhi_parse_activation_response(response, activation);
-    web_free(response);
+    if (result < 0)
+        rt_kprintf("xiaozhi: activation response schema invalid (%u bytes)\n",
+                   (unsigned int)response_length);
+done:
+    if (response != RT_NULL)
+        web_free(response);
+    if (request != RT_NULL)
+        rt_free(request);
+    if (session != RT_NULL)
+    {
+        LOCK_TCPIP_CORE();
+        webclient_close(session);
+        UNLOCK_TCPIP_CORE();
+    }
     return result;
 }
 

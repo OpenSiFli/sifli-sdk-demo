@@ -1,6 +1,6 @@
 # SF32LB573 AI Camera
 
-SF32LB573 拍学机原型工程。当前阶段验证 RT-Thread 应用协调、蓝牙 PAN、模拟麦克风环回，以及小智的激活和 WebSocket 信令；摄像头、PDM、DVP、SD 卡和外置 Wi-Fi 尚未接入。
+SF32LB573 拍学机原型工程。当前阶段包含 RT-Thread 应用协调、蓝牙 PAN、模拟麦克风环回，以及小智的激活、WebSocket、Opus 音频和 MCP 视觉上传协议；摄像头、DVP、SD 卡和外置 Wi-Fi 尚未接入。
 
 ## Build
 
@@ -53,4 +53,34 @@ ai_xiaozhi_activation
 ai_xiaozhi_connect
 ```
 
-验收成功日志为 `xiaozhi: WebSocket connected`，随后可看到服务端的文本帧。当前阶段仅完成激活和 WebSocket `hello` 信令，尚未发送 Opus 音频或播放服务端音频。
+验收成功日志为 `xiaozhi: WebSocket connected`，随后可看到服务端的文本帧和
+`xiaozhi: server hello ...`。服务器协商为单声道 Opus 后，固件会建立 16 kHz、
+60 ms 的麦克风上行编码通道，以及按服务端参数解码的扬声器下行播放通道。
+
+收到 `xiaozhi: server hello ... session=...` 后，可用以下命令验证会话监听控制：
+
+```text
+ai_xiaozhi_listen_start
+ai_xiaozhi_listen_stop
+```
+
+`ai_xiaozhi_listen_start` 先发送小智协议的 `listen` 文本帧，再启动 MIC0 的
+Opus 上行；`ai_xiaozhi_listen_stop` 停止采集。需要通过实板确认麦克风上行与
+扬声器下行的实际音频质量。
+
+服务端发来 MCP `initialize` 视觉能力后，串口显示
+`xiaozhi: vision upload capability ready`。若已有 JPEG 文件，可用：
+
+```text
+ai_xiaozhi_vision_upload <jpeg-path> [question]
+```
+
+该命令以服务端提供的 HTTP(S) URL 上传 `question` 和 `file` 两个 multipart
+字段；仅当服务端提供 token 时才发送 Bearer 认证。URL 和 token 只保存在 RAM，
+不会打印到串口或持久化。
+
+## 摄像头边界
+
+项目只预留 OV2640 的 DVP 接口，不启用 SPI-FIFO 或其他摄像头后端。当前
+SF32LB573 平台的 DVP 采集尚不可用，因此拍摄预览、快门保存和照片识别上传的
+硬件触发必须等待 DVP 支持及实际引脚定义完成；固件不会把该路径报告为已支持。

@@ -7,10 +7,14 @@
 #define AI_XIAOZHI_ENDPOINT_HOST_MAX 128U
 #define AI_XIAOZHI_ENDPOINT_PATH_MAX 256U
 #define AI_XIAOZHI_TOKEN_MAX 256U
+#define AI_XIAOZHI_MULTIPART_BOUNDARY_MAX 64U
 #define AI_XIAOZHI_ACTIVATION_CODE_MAX 64U
+#define AI_XIAOZHI_SESSION_ID_MAX 64U
+#define AI_XIAOZHI_AUDIO_FORMAT_MAX 16U
 #define AI_XIAOZHI_DEVICE_ID_MAX 18U
 #define AI_XIAOZHI_CLIENT_ID_MAX 37U
-#define AI_XIAOZHI_ACTIVATION_REQUEST_MAX 256U
+#define AI_XIAOZHI_CONTENT_LENGTH_HEADER_MAX 48U
+#define AI_XIAOZHI_ACTIVATION_REQUEST_MAX 1024U
 
 typedef struct
 {
@@ -28,6 +32,22 @@ typedef struct
     int activation_pending;
 } ai_xiaozhi_activation_t;
 
+typedef struct
+{
+    char session_id[AI_XIAOZHI_SESSION_ID_MAX];
+    char audio_format[AI_XIAOZHI_AUDIO_FORMAT_MAX];
+    uint32_t sample_rate;
+    uint8_t channels;
+    uint16_t frame_duration;
+    uint8_t protocol_version;
+} ai_xiaozhi_server_hello_t;
+
+typedef struct
+{
+    ai_xiaozhi_endpoint_t endpoint;
+    char token[AI_XIAOZHI_TOKEN_MAX];
+} ai_xiaozhi_vision_capability_t;
+
 int ai_xiaozhi_build_hello(char *out, size_t out_size);
 int ai_xiaozhi_build_listen_start(char *out, size_t out_size,
                                   const char *session_id);
@@ -35,14 +55,37 @@ int ai_xiaozhi_build_listen_stop(char *out, size_t out_size,
                                  const char *session_id);
 int ai_xiaozhi_format_device_id(char *out, size_t out_size,
                                 const uint8_t address[6]);
+int ai_xiaozhi_format_pan_device_id(char *out, size_t out_size,
+                                    const uint8_t pan_address[6]);
 int ai_xiaozhi_format_client_id(char *out, size_t out_size,
                                 const uint8_t digest[16]);
 int ai_xiaozhi_build_activation_request(char *out, size_t out_size,
                                         const char *device_id,
                                         const char *client_id);
+int ai_xiaozhi_format_content_length_header(char *out, size_t out_size,
+                                            size_t content_length);
+int ai_xiaozhi_activation_http_status_ok(int status);
 int ai_xiaozhi_parse_websocket_url(const char *url,
                                    ai_xiaozhi_endpoint_t *endpoint);
+int ai_xiaozhi_parse_http_url(const char *url,
+                              ai_xiaozhi_endpoint_t *endpoint);
 int ai_xiaozhi_parse_activation_response(const char *response,
                                          ai_xiaozhi_activation_t *activation);
+int ai_xiaozhi_parse_server_hello(const char *response,
+                                  ai_xiaozhi_server_hello_t *hello);
+int ai_xiaozhi_parse_mcp_vision_initialize(
+    const char *response, ai_xiaozhi_vision_capability_t *vision);
+int ai_xiaozhi_parse_mcp_vision_initialize_request(
+    const char *response, ai_xiaozhi_vision_capability_t *vision,
+    char *session_id, size_t session_id_size, int *request_id);
+int ai_xiaozhi_build_mcp_initialize_response(
+    char *out, size_t out_size, const char *session_id, int request_id);
+int ai_xiaozhi_multipart_length(const char *question, size_t jpeg_size,
+                                const char *boundary);
+int ai_xiaozhi_build_multipart_prefix(char *out, size_t out_size,
+                                      const char *boundary,
+                                      const char *question);
+int ai_xiaozhi_build_multipart_suffix(char *out, size_t out_size,
+                                      const char *boundary);
 
 #endif

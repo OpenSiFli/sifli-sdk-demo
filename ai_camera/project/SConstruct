@@ -1,0 +1,20 @@
+import os
+import rtconfig
+
+SIFLI_SDK = os.getenv('SIFLI_SDK')
+if not SIFLI_SDK:
+    print('Please source the SiFli SDK export script first.')
+    exit()
+
+from building import *
+
+PrepareEnv()
+AddBootLoader(SIFLI_SDK, rtconfig.CHIP)
+SifliEnv()
+
+TARGET = rtconfig.OUTPUT_DIR + rtconfig.TARGET_NAME + '.' + rtconfig.TARGET_EXT
+objs = PrepareBuilding(None)
+env = GetCurrentEnv()
+DoBuilding(TARGET, objs)
+AddFTAB(SIFLI_SDK, rtconfig.CHIP, env)
+GenDownloadScript(env)

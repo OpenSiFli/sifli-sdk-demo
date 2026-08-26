@@ -1,0 +1,3 @@
+# Kconfig root for the learning camera application.
+source "$SIFLI_SDK/Kconfig.v2"
+rsource "Kconfig.proj"

@@ -54,6 +54,12 @@ int device_input_start(void)
     int32_t button_id;
     uint8_t index;
 
+    if (rt_device_find(ADC_BUTTON_ADC_DEV_NAME) == RT_NULL)
+    {
+        rt_kprintf("input: ADC device %s unavailable\n",
+                   ADC_BUTTON_ADC_DEV_NAME);
+        return -RT_ERROR;
+    }
     config.pin = BSP_KEY1_PIN;
     config.active_state = BUTTON_ACTIVE_HIGH;
     config.mode = PIN_MODE_INPUT;

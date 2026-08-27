@@ -33,6 +33,7 @@ typedef struct
 
 #define BSP_KEY1_PIN 34
 #define PIN_MODE_INPUT 0U
+#define ADC_BUTTON_ADC_DEV_NAME "bat1"
 
 int32_t button_init(button_cfg_t *config);
 int32_t button_bind_adc_button(int32_t id, int8_t group_index,

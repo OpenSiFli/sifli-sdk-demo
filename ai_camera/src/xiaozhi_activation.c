@@ -12,6 +12,8 @@
 #include "bf0_ble_common.h"
 #include "bf0_sys_cfg.h"
 #include "drv_flash.h"
+#include "xiaozhi_activation_policy.h"
+#include "xiaozhi_websocket.h"
 
 extern BTS2S_ETHER_ADDR bt_pan_get_mac_address(void);
 
@@ -184,6 +186,13 @@ static void ai_xiaozhi_activation(int argc, char **argv)
     if (argc != 1)
     {
         rt_kprintf("usage: ai_xiaozhi_activation\n");
+        return;
+    }
+    if (ai_xiaozhi_activation_should_skip(
+            ai_xiaozhi_websocket_is_active(),
+            ai_xiaozhi_websocket_is_connecting()))
+    {
+        rt_kprintf("xiaozhi: activation skipped, WebSocket is active or connecting\n");
         return;
     }
     if (ai_xiaozhi_fetch_activation(&activation) < 0)

@@ -4,6 +4,7 @@
 
 #include <opus.h>
 #include <audio_server.h>
+#include <mem_section.h>
 #include <rtthread.h>
 
 #include "xiaozhi_audio_format.h"
@@ -16,6 +17,9 @@
 #define AI_XIAOZHI_AUDIO_EVENT_UPLINK (1U << 0)
 #define AI_XIAOZHI_AUDIO_EVENT_DOWNLINK (1U << 1)
 #define AI_XIAOZHI_AUDIO_EVENT_STOP (1U << 2)
+#define AI_XIAOZHI_AUDIO_EVENT_INITIALIZED (1U << 3)
+#define AI_XIAOZHI_AUDIO_INITIALIZE_TIMEOUT_MS 1000U
+#define AI_XIAOZHI_OPUS_HEAP_SIZE (64U * 1024U)
 
 typedef struct
 {
@@ -28,6 +32,7 @@ typedef struct
     rt_bool_t configured;
     volatile rt_bool_t listening;
     volatile rt_bool_t running;
+    volatile rt_bool_t worker_ready;
     uint16_t uplink_samples;
     uint16_t downlink_samples;
     uint32_t downlink_rate;
@@ -35,6 +40,7 @@ typedef struct
     rt_mq_t downlink;
     rt_event_t events;
     rt_thread_t worker;
+    struct rt_thread worker_object;
     audio_client_t microphone;
     audio_client_t speaker;
     ai_xiaozhi_audio_send_t send;
@@ -48,6 +54,55 @@ typedef struct
 } ai_xiaozhi_audio_context_t;
 
 static ai_xiaozhi_audio_context_t s_audio;
+static struct rt_memheap s_ai_xiaozhi_opus_heap;
+static rt_bool_t s_ai_xiaozhi_opus_heap_initialized;
+
+#if defined(__CC_ARM) || defined(__CLANG_ARM)
+L2_RET_BSS_SECT_BEGIN(ai_xiaozhi_opus_memory)
+static uint32_t s_ai_xiaozhi_opus_stack[
+    AI_XIAOZHI_AUDIO_WORKER_STACK_SIZE / sizeof(uint32_t)];
+static uint32_t s_ai_xiaozhi_opus_heap_pool[
+    AI_XIAOZHI_OPUS_HEAP_SIZE / sizeof(uint32_t)];
+L2_RET_BSS_SECT_END
+#else
+static uint32_t s_ai_xiaozhi_opus_stack[
+    AI_XIAOZHI_AUDIO_WORKER_STACK_SIZE / sizeof(uint32_t)]
+    L2_RET_BSS_SECT(s_ai_xiaozhi_opus_stack);
+static uint32_t s_ai_xiaozhi_opus_heap_pool[
+    AI_XIAOZHI_OPUS_HEAP_SIZE / sizeof(uint32_t)]
+    L2_RET_BSS_SECT(s_ai_xiaozhi_opus_heap_pool);
+#endif
+
+static int ai_xiaozhi_opus_heap_init(void)
+{
+    rt_err_t result;
+
+    if (s_ai_xiaozhi_opus_heap_initialized)
+        return 0;
+    result = rt_memheap_init(&s_ai_xiaozhi_opus_heap, "xz_opus_mem",
+                             s_ai_xiaozhi_opus_heap_pool,
+                             sizeof(s_ai_xiaozhi_opus_heap_pool));
+    if (result != RT_EOK)
+    {
+        rt_kprintf("xiaozhi: Opus heap initialization failed %d\n", result);
+        return -1;
+    }
+    s_ai_xiaozhi_opus_heap_initialized = RT_TRUE;
+    return 0;
+}
+
+void *opus_heap_malloc(uint32_t size)
+{
+    return s_ai_xiaozhi_opus_heap_initialized
+               ? rt_memheap_alloc(&s_ai_xiaozhi_opus_heap, size)
+               : RT_NULL;
+}
+
+void opus_heap_free(void *pointer)
+{
+    if (pointer != RT_NULL)
+        rt_memheap_free(pointer);
+}
 
 static int ai_xiaozhi_audio_microphone_callback(
     audio_server_callback_cmt_t command, void *context, uint32_t reserved)
@@ -185,20 +240,25 @@ static void ai_xiaozhi_audio_worker(void *parameter)
 {
     OpusEncoder *encoder;
     OpusDecoder *decoder;
-    int error;
+    int encoder_error = OPUS_OK;
+    int decoder_error = OPUS_OK;
 
     (void)parameter;
     encoder = opus_encoder_create(AI_XIAOZHI_AUDIO_UPLINK_RATE, 1,
-                                  OPUS_APPLICATION_VOIP, &error);
-    decoder = opus_decoder_create((opus_int32)s_audio.downlink_rate, 1, &error);
+                                  OPUS_APPLICATION_VOIP, &encoder_error);
+    decoder = opus_decoder_create((opus_int32)s_audio.downlink_rate, 1,
+                                  &decoder_error);
     if (encoder == RT_NULL || decoder == RT_NULL)
     {
-        rt_kprintf("xiaozhi: Opus initialization failed\n");
+        rt_kprintf("xiaozhi: Opus initialization failed encoder=%d decoder=%d\n",
+                   encoder_error, decoder_error);
         if (encoder != RT_NULL)
             opus_encoder_destroy(encoder);
         if (decoder != RT_NULL)
             opus_decoder_destroy(decoder);
+        s_audio.worker_ready = RT_FALSE;
         s_audio.running = RT_FALSE;
+        rt_event_send(s_audio.events, AI_XIAOZHI_AUDIO_EVENT_INITIALIZED);
         return;
     }
     opus_encoder_ctl(encoder, OPUS_SET_EXPERT_FRAME_DURATION(
@@ -206,6 +266,8 @@ static void ai_xiaozhi_audio_worker(void *parameter)
     opus_encoder_ctl(encoder, OPUS_SET_BITRATE(16000));
     opus_encoder_ctl(encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
     opus_encoder_ctl(encoder, OPUS_SET_COMPLEXITY(0));
+    s_audio.worker_ready = RT_TRUE;
+    rt_event_send(s_audio.events, AI_XIAOZHI_AUDIO_EVENT_INITIALIZED);
 
     while (s_audio.running)
     {
@@ -227,50 +289,109 @@ static void ai_xiaozhi_audio_worker(void *parameter)
 
     opus_encoder_destroy(encoder);
     opus_decoder_destroy(decoder);
+    s_audio.worker_ready = RT_FALSE;
     s_audio.running = RT_FALSE;
+}
+
+static void ai_xiaozhi_audio_release_worker_resources(void)
+{
+    if (s_audio.uplink != RT_NULL)
+        rt_ringbuffer_destroy(s_audio.uplink);
+    if (s_audio.downlink != RT_NULL)
+        rt_mq_delete(s_audio.downlink);
+    if (s_audio.events != RT_NULL)
+        rt_event_delete(s_audio.events);
+    s_audio.uplink = RT_NULL;
+    s_audio.downlink = RT_NULL;
+    s_audio.events = RT_NULL;
+    s_audio.worker = RT_NULL;
+    s_audio.worker_ready = RT_FALSE;
+}
+
+static void ai_xiaozhi_audio_wait_worker_exit(void)
+{
+    while (s_audio.running)
+        rt_thread_mdelay(1);
+
+    /* A static thread is detached by rt_thread_exit() after the entry
+     * function returns. Keep its object alive until that handoff completes. */
+    while (s_audio.worker != RT_NULL &&
+           rt_object_get_type((rt_object_t)s_audio.worker) != 0U)
+        rt_thread_mdelay(1);
 }
 
 static int ai_xiaozhi_audio_start_worker(void)
 {
+    ai_xiaozhi_audio_resource_t failed_resource;
+    rt_err_t thread_result;
+    rt_uint32_t events;
+
     if (s_audio.running)
-        return 0;
+        return s_audio.worker_ready ? 0 : -1;
+    if (s_audio.uplink != RT_NULL || s_audio.downlink != RT_NULL ||
+        s_audio.events != RT_NULL)
+    {
+        ai_xiaozhi_audio_wait_worker_exit();
+        ai_xiaozhi_audio_release_worker_resources();
+    }
+    if (ai_xiaozhi_opus_heap_init() < 0)
+    {
+        failed_resource = AI_XIAOZHI_AUDIO_RESOURCE_OPUS;
+        goto failed;
+    }
+
     s_audio.uplink = rt_ringbuffer_create(AI_XIAOZHI_AUDIO_UPLINK_BYTES * 3U);
+    if (s_audio.uplink == RT_NULL)
+    {
+        failed_resource = AI_XIAOZHI_AUDIO_RESOURCE_RINGBUFFER;
+        goto failed;
+    }
     s_audio.downlink = rt_mq_create("xz_aud_q", sizeof(ai_xiaozhi_audio_packet_t),
                                     AI_XIAOZHI_AUDIO_DOWNLINK_QUEUE_DEPTH,
                                     RT_IPC_FLAG_FIFO);
+    if (s_audio.downlink == RT_NULL)
+    {
+        failed_resource = AI_XIAOZHI_AUDIO_RESOURCE_MESSAGE_QUEUE;
+        goto failed;
+    }
     s_audio.events = rt_event_create("xz_aud", RT_IPC_FLAG_PRIO);
-    if (s_audio.uplink == RT_NULL || s_audio.downlink == RT_NULL ||
-        s_audio.events == RT_NULL)
+    if (s_audio.events == RT_NULL)
     {
-        if (s_audio.uplink != RT_NULL)
-            rt_ringbuffer_destroy(s_audio.uplink);
-        if (s_audio.downlink != RT_NULL)
-            rt_mq_delete(s_audio.downlink);
-        if (s_audio.events != RT_NULL)
-            rt_event_delete(s_audio.events);
-        s_audio.uplink = RT_NULL;
-        s_audio.downlink = RT_NULL;
-        s_audio.events = RT_NULL;
-        return -1;
+        failed_resource = AI_XIAOZHI_AUDIO_RESOURCE_EVENT;
+        goto failed;
     }
+    thread_result = rt_thread_init(&s_audio.worker_object, "xz_opus",
+                                   ai_xiaozhi_audio_worker, RT_NULL,
+                                   s_ai_xiaozhi_opus_stack,
+                                   sizeof(s_ai_xiaozhi_opus_stack), 18, 10);
+    if (thread_result != RT_EOK)
+    {
+        failed_resource = AI_XIAOZHI_AUDIO_RESOURCE_THREAD;
+        goto failed;
+    }
+    s_audio.worker = &s_audio.worker_object;
     s_audio.running = RT_TRUE;
-    s_audio.worker = rt_thread_create("xz_opus", ai_xiaozhi_audio_worker,
-                                      RT_NULL,
-                                      AI_XIAOZHI_AUDIO_WORKER_STACK_SIZE,
-                                      18, 10);
-    if (s_audio.worker == RT_NULL)
-    {
-        s_audio.running = RT_FALSE;
-        rt_ringbuffer_destroy(s_audio.uplink);
-        rt_mq_delete(s_audio.downlink);
-        rt_event_delete(s_audio.events);
-        s_audio.uplink = RT_NULL;
-        s_audio.downlink = RT_NULL;
-        s_audio.events = RT_NULL;
-        return -1;
-    }
+    s_audio.worker_ready = RT_FALSE;
     rt_thread_startup(s_audio.worker);
+    if (rt_event_recv(s_audio.events, AI_XIAOZHI_AUDIO_EVENT_INITIALIZED,
+                      RT_EVENT_FLAG_OR | RT_EVENT_FLAG_CLEAR,
+                      rt_tick_from_millisecond(
+                          AI_XIAOZHI_AUDIO_INITIALIZE_TIMEOUT_MS),
+                      &events) != RT_EOK || !s_audio.worker_ready)
+    {
+        failed_resource = AI_XIAOZHI_AUDIO_RESOURCE_OPUS;
+        s_audio.running = RT_FALSE;
+        rt_event_send(s_audio.events, AI_XIAOZHI_AUDIO_EVENT_STOP);
+        ai_xiaozhi_audio_wait_worker_exit();
+        goto failed;
+    }
     return 0;
+
+failed:
+    rt_kprintf("xiaozhi: audio worker setup failed at %s\n",
+               ai_xiaozhi_audio_resource_name(failed_resource));
+    ai_xiaozhi_audio_release_worker_resources();
+    return -1;
 }
 
 int ai_xiaozhi_audio_configure(const ai_xiaozhi_server_hello_t *hello)
@@ -290,8 +411,11 @@ int ai_xiaozhi_audio_configure(const ai_xiaozhi_server_hello_t *hello)
         return -1;
     s_audio.downlink_rate = hello->sample_rate;
     s_audio.downlink_samples = samples;
+    s_audio.configured = RT_FALSE;
+    if (ai_xiaozhi_audio_start_worker() < 0)
+        return -1;
     s_audio.configured = RT_TRUE;
-    return ai_xiaozhi_audio_start_worker();
+    return 0;
 }
 
 int ai_xiaozhi_audio_listen_start(ai_xiaozhi_audio_send_t send,
@@ -299,8 +423,9 @@ int ai_xiaozhi_audio_listen_start(ai_xiaozhi_audio_send_t send,
 {
     audio_parameter_t parameter = {0};
 
-    if (!s_audio.configured || send == RT_NULL ||
-        ai_xiaozhi_audio_start_worker() < 0)
+    if (send == RT_NULL || ai_xiaozhi_audio_start_worker() < 0 ||
+        !ai_xiaozhi_audio_worker_can_listen(s_audio.configured,
+                                             s_audio.worker_ready))
         return -1;
     if (s_audio.microphone != RT_NULL)
         return 0;
@@ -371,15 +496,9 @@ void ai_xiaozhi_audio_disconnect(void)
     ai_xiaozhi_audio_listen_stop();
     if (s_audio.events != RT_NULL)
         rt_event_send(s_audio.events, AI_XIAOZHI_AUDIO_EVENT_STOP);
-    while (s_audio.running)
-        rt_thread_mdelay(1);
+    ai_xiaozhi_audio_wait_worker_exit();
     if (s_audio.speaker != RT_NULL)
         audio_close(s_audio.speaker);
-    if (s_audio.uplink != RT_NULL)
-        rt_ringbuffer_destroy(s_audio.uplink);
-    if (s_audio.downlink != RT_NULL)
-        rt_mq_delete(s_audio.downlink);
-    if (s_audio.events != RT_NULL)
-        rt_event_delete(s_audio.events);
+    ai_xiaozhi_audio_release_worker_resources();
     rt_memset(&s_audio, 0, sizeof(s_audio));
 }

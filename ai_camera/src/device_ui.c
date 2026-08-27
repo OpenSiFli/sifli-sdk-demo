@@ -3,6 +3,7 @@
 #include <rtthread.h>
 
 #include <littlevgl2rtt.h>
+#include <lv_ex_data.h>
 #include <lvgl.h>
 
 #define DEVICE_UI_QUEUE_DEPTH 16U
@@ -139,6 +140,7 @@ static void device_ui_thread(void *parameter)
         rt_kprintf("ui: LVGL initialization failed %d\n", result);
         return;
     }
+    lv_ex_data_pool_init();
     device_ui_render(state);
     rt_kprintf("ui: CO5300 ready\n");
 

@@ -26,3 +26,27 @@ int ai_xiaozhi_audio_should_log_frame(uint32_t frame_count)
     return frame_count == 1U ||
            frame_count % AI_XIAOZHI_AUDIO_DIAGNOSTIC_INTERVAL_FRAMES == 0U;
 }
+
+int ai_xiaozhi_audio_worker_can_listen(int configured, int worker_ready)
+{
+    return configured != 0 && worker_ready != 0;
+}
+
+const char *ai_xiaozhi_audio_resource_name(ai_xiaozhi_audio_resource_t resource)
+{
+    switch (resource)
+    {
+    case AI_XIAOZHI_AUDIO_RESOURCE_RINGBUFFER:
+        return "uplink ringbuffer";
+    case AI_XIAOZHI_AUDIO_RESOURCE_MESSAGE_QUEUE:
+        return "downlink message queue";
+    case AI_XIAOZHI_AUDIO_RESOURCE_EVENT:
+        return "audio event";
+    case AI_XIAOZHI_AUDIO_RESOURCE_THREAD:
+        return "opus worker thread";
+    case AI_XIAOZHI_AUDIO_RESOURCE_OPUS:
+        return "opus codec";
+    default:
+        return "unknown";
+    }
+}

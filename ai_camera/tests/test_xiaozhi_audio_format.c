@@ -13,6 +13,10 @@ int main(void)
     assert(!ai_xiaozhi_audio_should_log_frame(2U));
     assert(ai_xiaozhi_audio_should_log_frame(25U));
     assert(!ai_xiaozhi_audio_should_log_frame(26U));
+    assert(ai_xiaozhi_audio_worker_can_listen(0, 0) == 0);
+    assert(ai_xiaozhi_audio_worker_can_listen(1, 0) == 0);
+    assert(ai_xiaozhi_audio_worker_can_listen(0, 1) == 0);
+    assert(ai_xiaozhi_audio_worker_can_listen(1, 1) == 1);
     assert(ai_xiaozhi_audio_frame_samples(16000U, 60U, &samples) == 0);
     assert(samples == 960U);
     assert(ai_xiaozhi_audio_frame_samples(24000U, 60U, &samples) == 0);

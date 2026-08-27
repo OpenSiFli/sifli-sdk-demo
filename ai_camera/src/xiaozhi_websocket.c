@@ -44,6 +44,16 @@ void ai_xiaozhi_set_event_callback(ai_xiaozhi_event_callback_t callback,
     s_event_context = context;
 }
 
+int ai_xiaozhi_websocket_is_active(void)
+{
+    return s_socket.pcb != RT_NULL;
+}
+
+int ai_xiaozhi_websocket_is_connecting(void)
+{
+    return s_connect_in_progress != RT_FALSE;
+}
+
 static err_t ai_xiaozhi_websocket_write(const void *data, size_t size,
                                         uint8_t opcode)
 {
@@ -124,7 +134,7 @@ static err_t ai_xiaozhi_websocket_callback(int code, char *buffer, size_t size)
             rt_kprintf("\n");
             if (ai_xiaozhi_audio_configure(&s_server_hello) < 0)
             {
-                rt_kprintf("xiaozhi: unsupported audio parameters\n");
+                rt_kprintf("xiaozhi: audio worker unavailable for negotiated parameters\n");
                 ai_xiaozhi_notify(AI_XIAOZHI_EVENT_ERROR);
             }
             else

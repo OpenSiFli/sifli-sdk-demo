@@ -54,6 +54,21 @@ cc -std=c11 -Wall -Wextra -Werror \
 
 cc -std=c11 -Wall -Wextra -Werror \
    -I"$project_dir/src" \
+   "$test_dir/test_xiaozhi_audio_ready_policy.c" \
+   "$project_dir/src/xiaozhi_audio_format.c" \
+   -o "$build_dir/test_xiaozhi_audio_ready_policy"
+"$build_dir/test_xiaozhi_audio_ready_policy"
+
+cc -std=c11 -Wall -Wextra -Werror \
+   -I"$project_dir/src" \
+   "$test_dir/test_xiaozhi_runtime_policy.c" \
+   "$project_dir/src/xiaozhi_activation_policy.c" \
+   "$project_dir/src/xiaozhi_audio_format.c" \
+   -o "$build_dir/test_xiaozhi_runtime_policy"
+"$build_dir/test_xiaozhi_runtime_policy"
+
+cc -std=c11 -Wall -Wextra -Werror \
+   -I"$project_dir/src" \
    -I"$test_dir/include" \
    -I"$sdk_dir/external/cJSON-1.7.17" \
    "$test_dir/test_xiaozhi_protocol.c" \

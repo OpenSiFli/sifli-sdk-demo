@@ -33,3 +33,5 @@ config CUSTOM_MEM_MAP
     bool
     select custom_mem_map
     default y if !SOC_SIMULATOR
+
+rsource "../../../SiFli-SDK-Peripherals/camera_framework/Kconfig"

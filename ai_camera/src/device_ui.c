@@ -6,6 +6,8 @@
 #include <lv_ex_data.h>
 #include <lvgl.h>
 
+#include <stdint.h>
+
 #define DEVICE_UI_QUEUE_DEPTH 16U
 #define DEVICE_UI_THREAD_STACK_SIZE 4096U
 #define DEVICE_UI_THREAD_PRIORITY 20U
@@ -73,6 +75,11 @@ static void device_ui_content_for_state(device_ui_state_t state,
         *detail = "XiaoZhi reply";
         *accent = lv_color_hex(0x2bb673);
         break;
+    case DEVICE_UI_CAMERA_CAPTURING:
+        *headline = "CAPTURING";
+        *detail = "Saving UXGA photo";
+        *accent = lv_color_hex(0xf5a524);
+        break;
     case DEVICE_UI_CAMERA_UNAVAILABLE:
         *headline = "CAMERA";
         *detail = "OV2640 DVP unavailable\nCapture path reserved";
@@ -92,6 +99,48 @@ static void device_ui_content_for_state(device_ui_state_t state,
     default:
         break;
     }
+}
+
+static void device_ui_button_event(lv_event_t *event)
+{
+    lv_event_code_t code = lv_event_get_code(event);
+    device_ui_event_t ui_event = (device_ui_event_t)(uintptr_t)
+        lv_event_get_user_data(event);
+
+    if (ui_event == DEVICE_UI_EVENT_KEY1_PRESSED &&
+        code != LV_EVENT_PRESSED)
+        return;
+    if (ui_event == DEVICE_UI_EVENT_KEY1_RELEASED &&
+        code != LV_EVENT_RELEASED)
+        return;
+    if (ui_event != DEVICE_UI_EVENT_KEY1_PRESSED &&
+        ui_event != DEVICE_UI_EVENT_KEY1_RELEASED &&
+        code != LV_EVENT_CLICKED)
+        return;
+    device_ui_post(ui_event);
+}
+
+static lv_obj_t *device_ui_add_button(lv_obj_t *parent, const char *text,
+                                      lv_coord_t x, lv_color_t color,
+                                      device_ui_event_t event,
+                                      lv_event_code_t event_code)
+{
+    lv_obj_t *button = lv_btn_create(parent);
+    lv_obj_t *label = lv_label_create(button);
+
+    lv_obj_set_size(button, 82, 52);
+    lv_obj_align(button, LV_ALIGN_BOTTOM_MID, x, -18);
+    lv_obj_set_style_bg_color(button, color, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(button, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(button, 0, LV_PART_MAIN);
+    lv_obj_set_style_radius(button, 6, LV_PART_MAIN);
+    lv_label_set_text(label, text);
+    lv_obj_set_style_text_font(label, LV_FONT_DEFAULT, LV_PART_MAIN);
+    lv_obj_set_style_text_color(label, lv_color_hex(0xffffff), LV_PART_MAIN);
+    lv_obj_center(label);
+    lv_obj_add_event_cb(button, device_ui_button_event, event_code,
+                        (void *)(uintptr_t)event);
+    return button;
 }
 
 static void device_ui_render(device_ui_state_t state)
@@ -123,9 +172,17 @@ static void device_ui_render(device_ui_state_t state)
     device_ui_add_label(status, detail, LV_FONT_DEFAULT,
                         LV_ALIGN_BOTTOM_MID, 0, -14, 270,
                         lv_color_hex(0xffffff));
-    device_ui_add_label(screen, "KEY1 TALK    KEY2 CAMERA    KEY3 HOME",
-                        LV_FONT_DEFAULT, LV_ALIGN_BOTTOM_MID, 0, -32, 350,
-                        lv_color_hex(0xb9c5d1));
+    lv_obj_t *talk_button = device_ui_add_button(
+        screen, "TALK", -140, lv_color_hex(0x3296dc),
+        DEVICE_UI_EVENT_KEY1_PRESSED, LV_EVENT_PRESSED);
+    lv_obj_add_event_cb(talk_button, device_ui_button_event, LV_EVENT_RELEASED,
+                        (void *)(uintptr_t)DEVICE_UI_EVENT_KEY1_RELEASED);
+    device_ui_add_button(screen, "PHOTO", -47, lv_color_hex(0xe94f37),
+                         DEVICE_UI_EVENT_KEY2_PRESSED, LV_EVENT_CLICKED);
+    device_ui_add_button(screen, "HOME", 47, lv_color_hex(0x596675),
+                         DEVICE_UI_EVENT_KEY3_PRESSED, LV_EVENT_CLICKED);
+    device_ui_add_button(screen, "CONNECT", 140, lv_color_hex(0x2bb673),
+                         DEVICE_UI_EVENT_KEY3_LONG_PRESSED, LV_EVENT_CLICKED);
 }
 
 static void device_ui_thread(void *parameter)

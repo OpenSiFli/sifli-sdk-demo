@@ -36,8 +36,8 @@ int main(void)
 
     transition = device_ui_reduce(transition.state,
                                   DEVICE_UI_EVENT_KEY2_PRESSED);
-    assert(transition.state == DEVICE_UI_CAMERA_UNAVAILABLE);
-    assert(transition.action == DEVICE_UI_ACTION_NONE);
+    assert(transition.state == DEVICE_UI_CAMERA_CAPTURING);
+    assert(transition.action == DEVICE_UI_ACTION_CAPTURE_PHOTO);
 
     transition = device_ui_reduce(transition.state,
                                   DEVICE_UI_EVENT_KEY3_PRESSED);

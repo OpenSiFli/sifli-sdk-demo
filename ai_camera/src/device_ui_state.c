@@ -30,6 +30,12 @@ device_ui_transition_t device_ui_reduce(device_ui_state_t state,
     case DEVICE_UI_EVENT_XIAOZHI_TTS_STOP:
         transition.state = DEVICE_UI_HOME;
         break;
+    case DEVICE_UI_EVENT_PHOTO_SAVED:
+        transition.state = DEVICE_UI_HOME;
+        break;
+    case DEVICE_UI_EVENT_PHOTO_ERROR:
+        transition.state = DEVICE_UI_ERROR;
+        break;
     case DEVICE_UI_EVENT_KEY1_PRESSED:
         if (state == DEVICE_UI_HOME)
         {
@@ -45,7 +51,11 @@ device_ui_transition_t device_ui_reduce(device_ui_state_t state,
         }
         break;
     case DEVICE_UI_EVENT_KEY2_PRESSED:
-        transition.state = DEVICE_UI_CAMERA_UNAVAILABLE;
+        if (state == DEVICE_UI_HOME)
+        {
+            transition.state = DEVICE_UI_CAMERA_CAPTURING;
+            transition.action = DEVICE_UI_ACTION_CAPTURE_PHOTO;
+        }
         break;
     case DEVICE_UI_EVENT_KEY3_PRESSED:
         transition.state = DEVICE_UI_HOME;

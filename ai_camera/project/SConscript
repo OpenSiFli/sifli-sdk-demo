@@ -12,5 +12,9 @@ objs.extend(SConscript(
     variant_dir='lcpu_patch', duplicate=0))
 objs.extend(SConscript(os.path.join(cwd, '../src/SConscript'),
                        variant_dir='src', duplicate=0))
+camera_root = os.path.normpath(
+    os.path.join(cwd, '../../../SiFli-SDK-Peripherals/camera_framework'))
+objs.extend(SConscript(os.path.join(camera_root, 'SConscript'),
+                       variant_dir='camera_framework', duplicate=0))
 
 Return('objs')

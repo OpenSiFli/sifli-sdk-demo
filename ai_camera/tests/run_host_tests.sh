@@ -7,6 +7,8 @@ sdk_dir=${SIFLI_SDK:-/Users/wangmian/SiFli-SDK/main}
 build_dir=$(mktemp -d "${TMPDIR:-/tmp}/ai-camera-tests.XXXXXX")
 trap 'rm -r "$build_dir"' EXIT
 
+sh "$test_dir/test_camera_project_config.sh"
+
 cc -std=c11 -Wall -Wextra -Werror \
    -I"$project_dir/src" \
    "$test_dir/test_app_state.c" \

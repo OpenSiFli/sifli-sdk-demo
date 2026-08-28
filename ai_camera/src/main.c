@@ -14,6 +14,7 @@
 #include "bts2_app_inc.h"
 #include "device_input.h"
 #include "device_ui.h"
+#include "camera_capture.h"
 #include "xiaozhi_websocket.h"
 
 #define APP_QUEUE_DEPTH 16U
@@ -75,12 +76,20 @@ static void app_ui_action(device_ui_action_t action, void *context)
     case DEVICE_UI_ACTION_LISTEN_STOP:
         result = ai_xiaozhi_listen_stop_request();
         break;
+    case DEVICE_UI_ACTION_CAPTURE_PHOTO:
+        result = ai_camera_capture_start();
+        break;
     case DEVICE_UI_ACTION_NONE:
     default:
         break;
     }
     if (result < 0)
-        device_ui_post(DEVICE_UI_EVENT_XIAOZHI_ERROR);
+    {
+        if (action == DEVICE_UI_ACTION_CAPTURE_PHOTO)
+            device_ui_post(DEVICE_UI_EVENT_PHOTO_ERROR);
+        else
+            device_ui_post(DEVICE_UI_EVENT_XIAOZHI_ERROR);
+    }
 }
 
 static int app_audio_write(void *context, const uint8_t *data,
@@ -334,6 +343,8 @@ int main(void)
         return -RT_ENOMEM;
     if (device_input_start() < 0)
         return -RT_ERROR;
+    if (ai_camera_capture_init() < 0)
+        return -RT_ENOMEM;
     ai_xiaozhi_set_event_callback(app_xiaozhi_event, RT_NULL);
 
     s_state = app_state_next(s_state, APP_EVENT_START);

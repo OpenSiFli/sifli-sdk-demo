@@ -1,12 +1,12 @@
 # SF32LB573 AI Camera
 
-SF32LB573 拍学机原型工程。当前阶段包含 RT-Thread 应用协调、蓝牙 PAN、模拟麦克风环回，以及小智的激活、WebSocket、Opus 音频和 MCP 视觉上传协议；摄像头、DVP、SD 卡和外置 Wi-Fi 尚未接入。
+SF32LB573 拍学机原型工程。当前阶段包含 RT-Thread 应用协调、蓝牙 PAN、模拟麦克风环回，以及小智的激活、WebSocket、Opus 音频和 MCP 视觉上传协议。前期拍照验证使用 Arducam OV2640 SPI FIFO；正式产品仍预留 OV2640 DVP 接口。
 
 ## Build
 
 ```sh
 source /Users/wangmian/SiFli-SDK/main/export.sh
-scons -C ai_camera/project --board=spi-hdk_lb573ub7n6 -j8
+sdk.py -C ai_camera/project build --board=spi-hdk_lb573ub7n6
 ```
 
 ## M1 board acceptance
@@ -79,8 +79,34 @@ ai_xiaozhi_vision_upload <jpeg-path> [question]
 字段；仅当服务端提供 token 时才发送 Bearer 认证。URL 和 token 只保存在 RAM，
 不会打印到串口或持久化。
 
-## 摄像头边界
+## M4 Arducam OV2640 bring-up
 
-项目只预留 OV2640 的 DVP 接口，不启用 SPI-FIFO 或其他摄像头后端。当前
-SF32LB573 平台的 DVP 采集尚不可用，因此拍摄预览、快门保存和照片识别上传的
-硬件触发必须等待 DVP 支持及实际引脚定义完成；固件不会把该路径报告为已支持。
+前期拍照验证使用 Arducam OV2640 SPI FIFO。SPI-HDK 原理图没有 Arducam 专用
+连接器，因此从 J1 扩展口跳线连接：
+
+| Arducam signal | SF32LB573 pin | Function |
+| --- | --- | --- |
+| MOSI | PA37 | SPI2_DIO |
+| MISO | PA38 | SPI2_DI |
+| SCLK | PA39 | SPI2_CLK |
+| CS | PA40 | SPI2_CS |
+| SCCB SDA | PA20 | I2C1_SDA |
+| SCCB SCL | PA27 | I2C1_SCL |
+| 3V3 / GND | 3V3 / GND | Module power |
+
+PA20 和 PA27 与 FT6146 触控共用 I2C1；二者 I2C 地址不同，可以共线。不要将
+Arducam 的 SPI 线接到 DCMI FPC：该 FPC 上的 PA37、PA38、PA39、PA40 分别承担
+VSYNC、PWDN、MCLK 和 GND，不是 SPI 信号。
+
+烧录后，在串口执行：
+
+```text
+ai_camera_capture
+```
+
+该命令不依赖 PAN 或小智连接状态。成功时会打印 JPEG 长度，保存
+`/photo/latest.jpg` 及递增编号照片到板载 NOR 的 6 MB `fs_root` 分区。若当前
+WebSocket 会话已经协商到小智视觉能力，则同一 JPEG 会继续上传识别。
+
+屏幕 `PHOTO` 按键和实体 KEY2 在小智就绪状态下走相同拍照路径。Arducam 是静态
+JPEG 验证后端；640x480、15 fps 的实时预览仍等待 OV2640 DVP 采集通路可用。

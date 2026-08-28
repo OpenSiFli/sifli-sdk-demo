@@ -1,5 +1,10 @@
+import os
 from building import *
 
+cwd = GetCurrentDir()
 src = Glob('*.c')
-group = DefineGroup('Applications', src, depend=[''], CPPPATH=['.'])
+camera_root = os.path.normpath(
+    os.path.join(cwd, '../../../SiFli-SDK-Peripherals/camera_framework'))
+group = DefineGroup('Applications', src, depend=[''],
+                    CPPPATH=['.', os.path.join(camera_root, 'core/handle')])
 Return('group')

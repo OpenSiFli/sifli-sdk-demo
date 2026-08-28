@@ -1,4 +1,5 @@
 #include <rtthread.h>
+#include <rtdevice.h>
 
 #include <stdint.h>
 #include <string.h>
@@ -14,7 +15,6 @@
 
 #define AI_XIAOZHI_WS_HEADER_MAX 1024U
 #define AI_XIAOZHI_WS_TEXT_MAX 1024U
-#define AI_XIAOZHI_WS_TEXT_LOG_MAX 160U
 #define AI_XIAOZHI_WS_CONNECT_TIMEOUT_MS 15000U
 #define AI_XIAOZHI_CONNECT_THREAD_STACK_SIZE 4096U
 #define AI_XIAOZHI_CONNECT_THREAD_PRIORITY 22U
@@ -30,6 +30,16 @@ static rt_bool_t s_listening;
 static volatile rt_bool_t s_connect_in_progress;
 static ai_xiaozhi_event_callback_t s_event_callback;
 static void *s_event_context;
+static struct rt_work s_audio_disconnect_work;
+static rt_bool_t s_audio_disconnect_work_initialized;
+
+static void ai_xiaozhi_audio_disconnect_work(struct rt_work *work,
+                                             void *work_data)
+{
+    (void)work;
+    (void)work_data;
+    ai_xiaozhi_audio_disconnect();
+}
 
 static void ai_xiaozhi_notify(ai_xiaozhi_event_t event)
 {
@@ -42,6 +52,12 @@ void ai_xiaozhi_set_event_callback(ai_xiaozhi_event_callback_t callback,
 {
     s_event_callback = callback;
     s_event_context = context;
+    if (!s_audio_disconnect_work_initialized)
+    {
+        rt_work_init(&s_audio_disconnect_work,
+                     ai_xiaozhi_audio_disconnect_work, RT_NULL);
+        s_audio_disconnect_work_initialized = RT_TRUE;
+    }
 }
 
 int ai_xiaozhi_websocket_is_active(void)
@@ -92,7 +108,8 @@ static err_t ai_xiaozhi_websocket_callback(int code, char *buffer, size_t size)
         s_connect_status = -1;
         s_server_hello_received = RT_FALSE;
         s_listening = RT_FALSE;
-        ai_xiaozhi_audio_disconnect();
+        if (s_audio_disconnect_work_initialized)
+            (void)rt_work_submit(&s_audio_disconnect_work, 0);
         if (was_ready)
             ai_xiaozhi_notify(AI_XIAOZHI_EVENT_DISCONNECTED);
         if (s_connect_waiting)
@@ -108,40 +125,13 @@ static err_t ai_xiaozhi_websocket_callback(int code, char *buffer, size_t size)
         int mcp_request_id;
 
         if (buffer == RT_NULL || size >= sizeof(text))
-        {
-            rt_kprintf("xiaozhi: text frame too large (%u bytes)\n",
-                       (unsigned int)size);
             return ERR_OK;
-        }
         rt_memcpy(text, buffer, size);
         text[size] = '\0';
-        rt_kprintf("xiaozhi: server text (%u bytes): %.*s\n",
-                   (unsigned int)size,
-                   (int)(size < AI_XIAOZHI_WS_TEXT_LOG_MAX
-                             ? size
-                             : AI_XIAOZHI_WS_TEXT_LOG_MAX),
-                   text);
         if (ai_xiaozhi_parse_server_hello(text, &s_server_hello) == 0)
         {
-            rt_kprintf("xiaozhi: server hello v%u %s %u Hz ch%u %u ms",
-                       s_server_hello.protocol_version,
-                       s_server_hello.audio_format,
-                       (unsigned int)s_server_hello.sample_rate,
-                       s_server_hello.channels,
-                       s_server_hello.frame_duration);
-            if (s_server_hello.session_id[0] != '\0')
-                rt_kprintf(" session=%s", s_server_hello.session_id);
-            rt_kprintf("\n");
-            if (ai_xiaozhi_audio_configure(&s_server_hello) < 0)
-            {
-                rt_kprintf("xiaozhi: audio worker unavailable for negotiated parameters\n");
-                ai_xiaozhi_notify(AI_XIAOZHI_EVENT_ERROR);
-            }
-            else
-            {
-                s_server_hello_received = RT_TRUE;
-                ai_xiaozhi_notify(AI_XIAOZHI_EVENT_READY);
-            }
+            s_server_hello_received = RT_TRUE;
+            ai_xiaozhi_notify(AI_XIAOZHI_EVENT_READY);
         }
         else if ((server_event = ai_xiaozhi_parse_server_event(text)) !=
                  AI_XIAOZHI_SERVER_EVENT_NONE)
@@ -161,28 +151,16 @@ static err_t ai_xiaozhi_websocket_callback(int code, char *buffer, size_t size)
                     mcp_response, sizeof(mcp_response), mcp_session_id,
                     mcp_request_id);
 
-                if (response_size < 0 ||
-                    ai_xiaozhi_websocket_write(mcp_response,
-                                                (size_t)response_size,
-                                                OPCODE_TEXT) != ERR_OK)
-                    rt_kprintf("xiaozhi: MCP initialize response failed\n");
-                else
-                    rt_kprintf("xiaozhi: vision upload capability ready\n");
+                if (response_size >= 0)
+                    (void)ai_xiaozhi_websocket_write(mcp_response,
+                                                     (size_t)response_size,
+                                                     OPCODE_TEXT);
             }
-            else
-                rt_kprintf("xiaozhi: vision capability rejected\n");
-        }
-        else
-        {
-            rt_kprintf("xiaozhi: unhandled text frame (%u bytes)\n",
-                       (unsigned int)size);
         }
     }
     else if (code == WS_DATA)
     {
-        if (ai_xiaozhi_audio_receive((const uint8_t *)buffer, size) < 0)
-            rt_kprintf("xiaozhi: audio packet dropped (%u bytes)\n",
-                       (unsigned int)size);
+        (void)ai_xiaozhi_audio_receive((const uint8_t *)buffer, size);
     }
     return ERR_OK;
 }
@@ -201,6 +179,9 @@ static int ai_xiaozhi_connect_request(void)
         rt_kprintf("xiaozhi: WebSocket is already active\n");
         return 0;
     }
+    if (s_audio_disconnect_work_initialized)
+        (void)rt_work_cancel_sync(&s_audio_disconnect_work);
+    ai_xiaozhi_audio_disconnect();
     if (ai_xiaozhi_fetch_activation(&activation) < 0)
     {
         rt_kprintf("xiaozhi: activation request failed\n");

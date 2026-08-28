@@ -21,6 +21,35 @@ int ai_xiaozhi_audio_frame_samples(uint32_t sample_rate,
     return 0;
 }
 
+uint32_t ai_xiaozhi_audio_speaker_cache_bytes(uint16_t downlink_samples)
+{
+    uint32_t frame_bytes = (uint32_t)downlink_samples * 2U;
+
+    return downlink_samples != 0U &&
+                   frame_bytes <= AI_XIAOZHI_AUDIO_DOWNLINK_PCM_MAX_BYTES
+               ? AI_XIAOZHI_AUDIO_SPEAKER_CACHE_BYTES
+               : 0U;
+}
+
+uint16_t ai_xiaozhi_audio_pcm_peak(const int16_t *samples, uint16_t count)
+{
+    uint16_t index;
+    uint32_t peak = 0U;
+
+    if (samples == 0)
+        return 0U;
+    for (index = 0U; index < count; ++index)
+    {
+        int32_t sample = samples[index];
+        uint32_t magnitude = sample < 0 ? (uint32_t)-sample :
+                                           (uint32_t)sample;
+
+        if (magnitude > peak)
+            peak = magnitude;
+    }
+    return (uint16_t)peak;
+}
+
 int ai_xiaozhi_audio_should_log_frame(uint32_t frame_count)
 {
     return frame_count == 1U ||

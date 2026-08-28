@@ -8,6 +8,22 @@ build_dir=$(mktemp -d "${TMPDIR:-/tmp}/ai-camera-tests.XXXXXX")
 trap 'rm -r "$build_dir"' EXIT
 
 sh "$test_dir/test_camera_project_config.sh"
+sh "$test_dir/test_camera_startup_policy.sh"
+sh "$test_dir/test_tls_client_handshake_policy.sh"
+sh "$test_dir/test_camera_ui_policy.sh"
+sh "$test_dir/test_xiaozhi_callback_policy.sh"
+
+cc -std=c11 -Wall -Wextra -Werror \
+   -I"$project_dir/src" \
+   -I"$test_dir/include" \
+   -I"$sdk_dir/external/lvgl_v8" \
+   -I"$sdk_dir/external/lvgl_v8/src" \
+   "$test_dir/test_device_ui_font.c" \
+   "$project_dir/src/device_ui_font.c" \
+   "$sdk_dir/external/lvgl_v8/src/font/lv_font_fmt_txt.c" \
+   "$sdk_dir/external/lvgl_v8/src/misc/lv_utils.c" \
+   -o "$build_dir/test_device_ui_font"
+"$build_dir/test_device_ui_font"
 
 cc -std=c11 -Wall -Wextra -Werror \
    -I"$project_dir/src" \

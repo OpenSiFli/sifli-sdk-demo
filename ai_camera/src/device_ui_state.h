@@ -13,6 +13,7 @@ typedef enum
     DEVICE_UI_CAMERA_UNAVAILABLE,
     DEVICE_UI_CONNECTION,
     DEVICE_UI_ERROR,
+    DEVICE_UI_STORAGE_ERROR,
 } device_ui_state_t;
 
 typedef enum

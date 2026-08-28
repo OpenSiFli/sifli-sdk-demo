@@ -47,6 +47,24 @@ int main(void)
                                   DEVICE_UI_EVENT_KEY3_LONG_PRESSED);
     assert(transition.state == DEVICE_UI_CONNECTION);
 
+    transition = device_ui_reduce(DEVICE_UI_HOME,
+                                  DEVICE_UI_EVENT_PHOTO_ERROR);
+    assert(transition.state == DEVICE_UI_STORAGE_ERROR);
+    assert(transition.action == DEVICE_UI_ACTION_NONE);
+
+    transition = device_ui_reduce(DEVICE_UI_HOME,
+                                  DEVICE_UI_EVENT_XIAOZHI_ERROR);
+    assert(transition.state == DEVICE_UI_ERROR);
+    assert(transition.action == DEVICE_UI_ACTION_NONE);
+
+    transition = device_ui_reduce(DEVICE_UI_STORAGE_ERROR,
+                                  DEVICE_UI_EVENT_KEY3_PRESSED);
+    assert(transition.state == DEVICE_UI_HOME);
+
+    transition = device_ui_reduce(DEVICE_UI_HOME,
+                                  DEVICE_UI_EVENT_PHOTO_SAVED);
+    assert(transition.state == DEVICE_UI_HOME);
+
     transition = device_ui_reduce(transition.state,
                                   DEVICE_UI_EVENT_PAN_DOWN);
     assert(transition.state == DEVICE_UI_OFFLINE);

@@ -343,8 +343,6 @@ int main(void)
         return -RT_ENOMEM;
     if (device_input_start() < 0)
         return -RT_ERROR;
-    if (ai_camera_capture_init() < 0)
-        return -RT_ENOMEM;
     ai_xiaozhi_set_event_callback(app_xiaozhi_event, RT_NULL);
 
     s_state = app_state_next(s_state, APP_EVENT_START);

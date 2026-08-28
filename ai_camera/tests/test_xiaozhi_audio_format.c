@@ -23,6 +23,16 @@ int main(void)
     assert(samples == 1440U);
     assert(ai_xiaozhi_audio_frame_samples(16000U, 20U, &samples) == 0);
     assert(samples == 320U);
+    assert(ai_xiaozhi_audio_speaker_cache_bytes(1440U) == 4096U);
+    assert(ai_xiaozhi_audio_speaker_cache_bytes(1441U) == 0U);
+    assert(ai_xiaozhi_audio_speaker_cache_bytes(0U) == 0U);
+    {
+        int16_t pcm[] = {0, -32768, 1200, -800};
+
+        assert(ai_xiaozhi_audio_pcm_peak(pcm, 4U) == 32768U);
+        assert(ai_xiaozhi_audio_pcm_peak(pcm, 0U) == 0U);
+        assert(ai_xiaozhi_audio_pcm_peak(0, 4U) == 0U);
+    }
     assert(ai_xiaozhi_audio_frame_samples(16000U, 15U, &samples) < 0);
     assert(ai_xiaozhi_audio_frame_samples(16000U, 7U, &samples) < 0);
     assert(ai_xiaozhi_audio_frame_samples(0U, 60U, &samples) < 0);

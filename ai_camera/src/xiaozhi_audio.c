@@ -20,6 +20,7 @@
 #define AI_XIAOZHI_AUDIO_EVENT_INITIALIZED (1U << 3)
 #define AI_XIAOZHI_AUDIO_INITIALIZE_TIMEOUT_MS 1000U
 #define AI_XIAOZHI_OPUS_HEAP_SIZE (64U * 1024U)
+#define AI_XIAOZHI_AUDIO_SPEAKER_VOLUME 15U
 
 typedef struct
 {
@@ -133,19 +134,30 @@ static int ai_xiaozhi_audio_microphone_callback(
 static int ai_xiaozhi_audio_open_speaker(void)
 {
     audio_parameter_t parameter = {0};
+    uint32_t cache_size;
 
     if (s_audio.speaker != RT_NULL)
         return 0;
+    cache_size = ai_xiaozhi_audio_speaker_cache_bytes(
+        s_audio.downlink_samples);
+    if (cache_size == 0U)
+    {
+        rt_kprintf("xiaozhi: unsupported downlink frame %u samples\n",
+                   (unsigned int)s_audio.downlink_samples);
+        return -1;
+    }
     parameter.write_bits_per_sample = 16U;
     parameter.write_channnel_num = 1U;
     parameter.write_samplerate = s_audio.downlink_rate;
-    parameter.write_cache_size = 8192U;
+    parameter.write_cache_size = cache_size;
+    (void)audio_server_set_private_volume(AUDIO_TYPE_LOCAL_MUSIC,
+                                          AI_XIAOZHI_AUDIO_SPEAKER_VOLUME);
     s_audio.speaker = audio_open(AUDIO_TYPE_LOCAL_MUSIC, AUDIO_TX, &parameter,
                                  RT_NULL, RT_NULL);
     if (s_audio.speaker == RT_NULL)
-        rt_kprintf("xiaozhi: speaker open failed\\n");
+        rt_kprintf("xiaozhi: speaker open failed\n");
     else
-        rt_kprintf("xiaozhi: speaker opened %u Hz\\n",
+        rt_kprintf("xiaozhi: speaker opened %u Hz\n",
                    (unsigned int)s_audio.downlink_rate);
     return s_audio.speaker == RT_NULL ? -1 : 0;
 }
@@ -211,7 +223,7 @@ static void ai_xiaozhi_audio_process_uplink(OpusEncoder *encoder)
 static void ai_xiaozhi_audio_process_downlink(OpusDecoder *decoder)
 {
     ai_xiaozhi_audio_packet_t packet;
-    uint8_t pcm[2880U];
+    uint8_t pcm[AI_XIAOZHI_AUDIO_DOWNLINK_PCM_MAX_BYTES];
 
     while (s_audio.downlink != RT_NULL &&
            rt_mq_recv(s_audio.downlink, &packet, sizeof(packet), 0) == RT_EOK)
@@ -222,12 +234,16 @@ static void ai_xiaozhi_audio_process_downlink(OpusDecoder *decoder)
 
         if (decoded > 0)
         {
+            uint16_t peak = ai_xiaozhi_audio_pcm_peak(
+                (const int16_t *)pcm, (uint16_t)decoded);
+
             s_audio.speaker_frames++;
             if (ai_xiaozhi_audio_should_log_frame(s_audio.speaker_frames))
-                rt_kprintf("xiaozhi: downlink frame=%u packet=%uB pcm=%uB\n",
+                rt_kprintf("xiaozhi: downlink frame=%u packet=%uB pcm=%uB peak=%u\n",
                            (unsigned int)s_audio.speaker_frames,
                            (unsigned int)packet.size,
-                           (unsigned int)decoded * 2U);
+                           (unsigned int)decoded * 2U,
+                           (unsigned int)peak);
             ai_xiaozhi_audio_write_speaker(pcm, (size_t)decoded * 2U);
         }
         else
@@ -402,6 +418,7 @@ int ai_xiaozhi_audio_configure(const ai_xiaozhi_server_hello_t *hello)
         hello->channels != 1U ||
         ai_xiaozhi_audio_frame_samples(hello->sample_rate,
                                        hello->frame_duration, &samples) < 0 ||
+        ai_xiaozhi_audio_speaker_cache_bytes(samples) == 0U ||
         ai_xiaozhi_audio_frame_samples(AI_XIAOZHI_AUDIO_UPLINK_RATE,
                                        AI_XIAOZHI_AUDIO_UPLINK_DURATION_MS,
                                        &s_audio.uplink_samples) < 0)
@@ -456,13 +473,6 @@ int ai_xiaozhi_audio_listen_start(ai_xiaozhi_audio_send_t send,
 void ai_xiaozhi_audio_listen_stop(void)
 {
     s_audio.listening = RT_FALSE;
-    rt_kprintf("xiaozhi: audio stats mic=%uB/%u cb drop=%uB uplink=%u downlink=%u speaker=%u\n",
-               (unsigned int)s_audio.microphone_bytes,
-               (unsigned int)s_audio.microphone_callbacks,
-               (unsigned int)s_audio.microphone_dropped_bytes,
-               (unsigned int)s_audio.uplink_frames,
-               (unsigned int)s_audio.downlink_packets,
-               (unsigned int)s_audio.speaker_frames);
     if (s_audio.microphone != RT_NULL)
     {
         audio_close(s_audio.microphone);
@@ -482,9 +492,6 @@ int ai_xiaozhi_audio_receive(const uint8_t *data, size_t size)
     packet.size = (uint16_t)size;
     rt_memcpy(packet.data, data, size);
     s_audio.downlink_packets++;
-    if (ai_xiaozhi_audio_should_log_frame(s_audio.downlink_packets))
-        rt_kprintf("xiaozhi: WebSocket downlink packet=%u size=%uB\n",
-                   (unsigned int)s_audio.downlink_packets, (unsigned int)size);
     if (rt_mq_send(s_audio.downlink, &packet, sizeof(packet)) != RT_EOK)
         return -1;
     rt_event_send(s_audio.events, AI_XIAOZHI_AUDIO_EVENT_DOWNLINK);

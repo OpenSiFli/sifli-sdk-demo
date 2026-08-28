@@ -61,7 +61,11 @@ static int ai_camera_save_file(const char *path, const void *buffer,
 
 static int ai_camera_filesystem_init(void)
 {
+    rt_device_t fs_device;
+    struct rt_device_blk_geometry geometry = {0};
     const char *mounted_path;
+    int mount_result;
+    int mkfs_result;
 
     if (s_filesystem_ready)
         return 0;
@@ -71,18 +75,43 @@ static int ai_camera_filesystem_init(void)
                             AI_CAMERA_FILESYSTEM_DEVICE);
         s_filesystem_registered = RT_TRUE;
     }
-    mounted_path = dfs_filesystem_get_mounted_path(
-        rt_device_find(AI_CAMERA_FILESYSTEM_DEVICE));
+    fs_device = rt_device_find(AI_CAMERA_FILESYSTEM_DEVICE);
+    if (fs_device == RT_NULL)
+    {
+        rt_kprintf("camera: filesystem device %s unavailable\n",
+                   AI_CAMERA_FILESYSTEM_DEVICE);
+        return -1;
+    }
+    if (rt_device_control(fs_device, RT_DEVICE_CTRL_BLK_GETGEOME,
+                          &geometry) == RT_EOK)
+    {
+        rt_kprintf("camera: fs geometry sector=%u block=%u count=%u\n",
+                   (unsigned int)geometry.bytes_per_sector,
+                   (unsigned int)geometry.block_size,
+                   (unsigned int)geometry.sector_count);
+    }
+    else
+    {
+        rt_kprintf("camera: fs geometry unavailable\n");
+    }
+    mounted_path = dfs_filesystem_get_mounted_path(fs_device);
     if (mounted_path == RT_NULL)
     {
-        if (dfs_mount(AI_CAMERA_FILESYSTEM_DEVICE, "/", "elm", 0,
-                      RT_NULL) != 0 &&
-            (dfs_mkfs("elm", AI_CAMERA_FILESYSTEM_DEVICE) != 0 ||
-             dfs_mount(AI_CAMERA_FILESYSTEM_DEVICE, "/", "elm", 0,
-                       RT_NULL) != 0))
+        mount_result = dfs_mount(AI_CAMERA_FILESYSTEM_DEVICE, "/", "elm", 0,
+                                 RT_NULL);
+        rt_kprintf("camera: fs mount result=%d\n", mount_result);
+        if (mount_result != 0)
         {
-            rt_kprintf("camera: mount fs_root failed\n");
-            return -1;
+            mkfs_result = dfs_mkfs("elm", AI_CAMERA_FILESYSTEM_DEVICE);
+            rt_kprintf("camera: fs format result=%d\n", mkfs_result);
+            if (mkfs_result != 0)
+                return -1;
+            mount_result = dfs_mount(AI_CAMERA_FILESYSTEM_DEVICE, "/", "elm",
+                                     0, RT_NULL);
+            rt_kprintf("camera: fs mount after format result=%d\n",
+                       mount_result);
+            if (mount_result != 0)
+                return -1;
         }
     }
     s_filesystem_ready = RT_TRUE;

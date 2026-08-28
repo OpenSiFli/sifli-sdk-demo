@@ -34,7 +34,7 @@ device_ui_transition_t device_ui_reduce(device_ui_state_t state,
         transition.state = DEVICE_UI_HOME;
         break;
     case DEVICE_UI_EVENT_PHOTO_ERROR:
-        transition.state = DEVICE_UI_ERROR;
+        transition.state = DEVICE_UI_STORAGE_ERROR;
         break;
     case DEVICE_UI_EVENT_KEY1_PRESSED:
         if (state == DEVICE_UI_HOME)

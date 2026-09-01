@@ -1,0 +1,33 @@
+import os
+from building import *
+
+Import('SIFLI_SDK', 'CAMERA_SOFTWARE_ROOT')
+Import('CAMERA_SW_ISP_RUN_ON_HCPU', 'CAMERA_SW_ISP_RUN_ON_ACPU')
+Import('CAMERA_SW_JPEG_RUN_ON_HCPU', 'CAMERA_SW_JPEG_RUN_ON_ACPU')
+
+# Add source code
+display_src = Glob('display/*.c')
+app_src = Glob('app/*.c', exclude=[
+    'app/camera_isp_compare.c',
+    'app/camera_isp_config.c',
+    'app/camera_isp_mode.c',
+    'app/camera_sensor_awb_guard.c',
+])
+src = (Glob('*.c') + app_src + Glob('image_processing/*.c') +
+       Glob('camera/*.c') + display_src + Glob('input/*.c') +
+       Glob('storage/*.c'))
+if CAMERA_SW_ISP_RUN_ON_ACPU or CAMERA_SW_JPEG_RUN_ON_ACPU:
+    src += SConscript(
+        os.path.join(CAMERA_SOFTWARE_ROOT, 'example/acpu/hcpu/SConscript'),
+        variant_dir='camera_sw_acpu_hcpu', duplicate=0)
+if CAMERA_SW_ISP_RUN_ON_HCPU:
+    src += SConscript(os.path.join(CAMERA_SOFTWARE_ROOT, 'isp/SConscript'),
+                      variant_dir='camera_sw_isp', duplicate=0)
+if CAMERA_SW_JPEG_RUN_ON_HCPU:
+    src += SConscript(os.path.join(CAMERA_SOFTWARE_ROOT, 'jpeg/SConscript'),
+                      variant_dir='camera_sw_jpeg', duplicate=0)
+acpu_ctrl_dir = os.path.join(SIFLI_SDK, 'middleware/acpu_ctrl')
+group = DefineGroup('Applications', src, depend = [''],
+                    CPPPATH=[acpu_ctrl_dir])
+
+Return('group')

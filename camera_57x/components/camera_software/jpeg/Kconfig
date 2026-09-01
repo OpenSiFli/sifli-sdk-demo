@@ -1,0 +1,30 @@
+menuconfig CAMERA_SW_JPEG
+    bool "Camera software JPEG"
+    default y
+
+if CAMERA_SW_JPEG
+
+config CAMERA_SW_JPEG_ENCODER
+    bool "BitBank JPEGENC encoder"
+    default y
+
+config CAMERA_SW_JPEG_DECODER
+    bool "ChaN TJpgDec decoder"
+    default y
+
+choice
+    prompt "Camera software JPEG execution core"
+    default CAMERA_SW_JPEG_RUN_ON_HCPU if CAMERA_SW_JPEG_EXAMPLE_HCPU
+    default CAMERA_SW_JPEG_RUN_ON_ACPU if BSP_USING_ACPU
+    default CAMERA_SW_JPEG_RUN_ON_HCPU
+
+config CAMERA_SW_JPEG_RUN_ON_HCPU
+    bool "HCPU"
+
+config CAMERA_SW_JPEG_RUN_ON_ACPU
+    bool "ACPU"
+    depends on BSP_USING_ACPU
+
+endchoice
+
+endif

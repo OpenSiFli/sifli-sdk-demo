@@ -1,0 +1,34 @@
+#APP specific configuration.
+choice
+    prompt "Camera sensor backend"
+    default CAMERA_SENSOR_GC032A
+
+config CAMERA_SENSOR_GC032A
+    bool "GC032A"
+    select BSP_USING_DCMI
+    select BSP_USING_PWMT2
+
+config CAMERA_SENSOR_ARDUCAM_OV2640
+    bool "Arducam OV2640 SPI FIFO"
+    select BSP_USING_I2C
+    select BSP_USING_I2C1
+    select BSP_USING_SPI
+    select BSP_USING_SPI2
+    select BSP_SPI2_RX_USING_DMA
+    select BSP_SPI2_TX_USING_DMA
+endchoice
+
+if CAMERA_SENSOR_ARDUCAM_OV2640
+
+comment "OV2640 direct RGB565 preview is temporarily unavailable"
+comment "This demo only supports JPEG over the ArduChip SPI FIFO."
+comment "No OV2640 DVP/parallel-camera backend is provided."
+
+endif
+
+rsource "../components/camera_software/Kconfig"
+
+config CUSTOM_MEM_MAP
+    bool
+	select custom_mem_map
+	default y if !SOC_SIMULATOR

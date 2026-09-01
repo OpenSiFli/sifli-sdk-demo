@@ -1,0 +1,10 @@
+from building import *
+
+cwd = GetCurrentDir()
+
+group = DefineGroup(
+    'Camera Software ISP', ['src/camera_sw_isp.c', 'src/camera_sw_isp_core.c',
+    'src/camera_sw_isp_filter.c', 'src/camera_sw_isp_pipeline.c'], depend=[''],
+    CPPPATH=[cwd + '/include'],
+    CCFLAGS='-O2')
+Return('group')

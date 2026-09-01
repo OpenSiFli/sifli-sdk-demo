@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: Apache-2.0
+import os
+from building import *
+
+Import('CAMERA_SW_JPEG_ROOT')
+
+cwd = GetCurrentDir()
+sources = Glob('*.c')
+defines = []
+if GetDepend(['CAMERA_SW_JPEG_RUN_ON_HCPU']):
+    sources.extend(SConscript(os.path.join(CAMERA_SW_JPEG_ROOT, 'SConscript'),
+                              variant_dir='camera_sw_jpeg', duplicate=0))
+    if GetDepend(['CAMERA_SW_JPEG_ENCODER']):
+        defines.append('CAMERA_SW_JPEG_EXAMPLE_ENCODER')
+    if GetDepend(['CAMERA_SW_JPEG_DECODER']):
+        defines.append('CAMERA_SW_JPEG_EXAMPLE_DECODER')
+group = DefineGroup('Camera Software JPEG Example', sources, depend=[''],
+                    CPPPATH=[os.path.join(CAMERA_SW_JPEG_ROOT, 'include')],
+                    CPPDEFINES=defines)
+Return('group')

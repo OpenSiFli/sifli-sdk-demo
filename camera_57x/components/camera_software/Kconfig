@@ -1,0 +1,2 @@
+rsource "isp/Kconfig"
+rsource "jpeg/Kconfig"

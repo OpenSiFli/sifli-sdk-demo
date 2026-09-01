@@ -10,10 +10,10 @@
 
 #include <rtthread.h>
 
-#define CONFIG_USB_PRINTF(...) do { } while (0)
+#define CONFIG_USB_PRINTF(...) rt_kprintf(__VA_ARGS__)
 
 #ifndef CONFIG_USB_DBG_LEVEL
-    #define CONFIG_USB_DBG_LEVEL USB_DBG_ERROR
+    #define CONFIG_USB_DBG_LEVEL USB_DBG_INFO
 #endif
 
 /* Enable print with color */

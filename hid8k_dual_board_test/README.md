@@ -4,13 +4,13 @@
 
 本目录包含两块同型号 SF32LB58 NAND 开发板的测试工程：一块作为 USB 2.0 高速 HID 设备，一块作为 USB 主机。
 
-为避免更改协议栈内容，固件不使用 DWT、BTIM1、MUSB 私有钩子、UNDERRUN 注入、间隔统计或本地通过/失败判定。测试以串接在两块板之间的 USB 协议分析仪记录为准。
+测试以串接在两块板之间的 USB 协议分析仪记录为准。
 
 ## 工程
 
 | 目录 | 板端角色 | 功能 |
 |---|---|---|
-| `device_hid_8k` | USB Device | 枚举为高速 HID，持续提供 8 字节 EP1 IN 报告 |
+| `device_hid_8k` | USB Device | 枚举为高速 HID，持续提供 8 字节 EP1 IN 报告，KEY1 可切换画圈 |
 | `host_stock_urb` | USB Host | 枚举并校验目标设备，自动提交标准长中断 IN URB |
 
 两个工程的目标板均为：
@@ -37,8 +37,8 @@ sf32lb58-lcd_a128r32n1_dsi
 
 ```text
 byte 0    buttons = 0
-byte 1    X = 0
-byte 2    Y = 0
+byte 1    X：画圈关闭时为0，画圈开启时为圆周轨迹X增量
+byte 2    Y：画圈关闭时为0，画圈开启时为圆周轨迹Y增量
 byte 3    wheel = 0
 byte 4..7 32位小端递增序号
 ```

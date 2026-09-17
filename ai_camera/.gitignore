@@ -1,0 +1,15 @@
+# SCons build outputs and local build archives
+/project/build_*/
+/project/build_*.zip
+/project/*.log
+/project/Kconfig.tmp
+.sconsign.dblite
+*.o
+*.obj
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Local review snapshot
+/review_baseline_*/

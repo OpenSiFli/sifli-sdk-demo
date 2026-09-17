@@ -1,0 +1,6 @@
+from building import *
+
+cwd = GetCurrentDir()
+group = DefineGroup('Camera JPEG Decoder', ['camera_tjpgd.c'],
+                    depend=[''], CPPPATH=[cwd], CCFLAGS='-O2')
+Return('group')

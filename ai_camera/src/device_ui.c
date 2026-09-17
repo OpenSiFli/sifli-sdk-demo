@@ -37,6 +37,10 @@ static rt_mq_t s_queue;
 static rt_thread_t s_thread;
 static device_ui_action_handler_t s_action_handler;
 static void *s_action_context;
+static rt_sem_t s_pause_ack;
+static rt_sem_t s_resume_sem;
+static volatile rt_bool_t s_pause_requested;
+static volatile rt_bool_t s_paused;
 
 static void device_ui_add_label(lv_obj_t *parent, const char *text,
                                 const lv_font_t *font, lv_align_t align,
@@ -356,6 +360,15 @@ static void device_ui_thread(void *parameter)
                 s_action_handler != RT_NULL)
                 s_action_handler(transition.action, s_action_context);
         }
+        if (s_pause_requested)
+        {
+            s_paused = RT_TRUE;
+            rt_sem_release(s_pause_ack);
+            rt_sem_take(s_resume_sem, RT_WAITING_FOREVER);
+            s_paused = RT_FALSE;
+            s_pause_requested = RT_FALSE;
+            device_ui_render(state);
+        }
     }
 }
 
@@ -365,7 +378,10 @@ int device_ui_start(device_ui_action_handler_t action_handler, void *context)
         return 0;
     s_queue = rt_mq_create("ai_ui", sizeof(device_ui_message_t),
                            DEVICE_UI_QUEUE_DEPTH, RT_IPC_FLAG_FIFO);
-    if (s_queue == RT_NULL)
+    s_pause_ack = rt_sem_create("ui_pause", 0, RT_IPC_FLAG_FIFO);
+    s_resume_sem = rt_sem_create("ui_resume", 0, RT_IPC_FLAG_FIFO);
+    if (s_queue == RT_NULL || s_pause_ack == RT_NULL ||
+        s_resume_sem == RT_NULL)
         return -RT_ENOMEM;
     s_action_handler = action_handler;
     s_action_context = context;
@@ -385,4 +401,28 @@ void device_ui_post(device_ui_event_t event)
 
     if (s_queue != RT_NULL && event != DEVICE_UI_EVENT_NONE)
         (void)rt_mq_send(s_queue, &message, sizeof(message));
+}
+
+int device_ui_pause(void)
+{
+    device_ui_message_t message = {.event = DEVICE_UI_EVENT_NONE};
+
+    if (s_queue == RT_NULL || s_pause_ack == RT_NULL)
+        return -RT_ERROR;
+    if (s_paused)
+        return 0;
+    s_pause_requested = RT_TRUE;
+    if (rt_mq_send(s_queue, &message, sizeof(message)) != RT_EOK ||
+        rt_sem_take(s_pause_ack, rt_tick_from_millisecond(1000U)) != RT_EOK)
+    {
+        s_pause_requested = RT_FALSE;
+        return -RT_ETIMEOUT;
+    }
+    return 0;
+}
+
+void device_ui_resume(void)
+{
+    if (s_paused && s_resume_sem != RT_NULL)
+        rt_sem_release(s_resume_sem);
 }

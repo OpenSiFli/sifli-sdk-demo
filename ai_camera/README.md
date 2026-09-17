@@ -1,112 +1,146 @@
-# SF32LB573 AI Camera
+# SF32LB57x OV2640 相机
 
-SF32LB573 拍学机原型工程。当前阶段包含 RT-Thread 应用协调、蓝牙 PAN、模拟麦克风环回，以及小智的激活、WebSocket、Opus 音频和 MCP 视觉上传协议。前期拍照验证使用 Arducam OV2640 SPI FIFO；正式产品仍预留 OV2640 DVP 接口。
+本项目面向搭载 SF32LB57EYBBN6 的相机硬件，使用 OV2640 8-bit DVP 并行摄像头、1024×600 DPI 屏幕、三个 ADC 按键和外接 16 MiB PY25Q128HA NOR，实现实时预览、拍照保存及本地图库。构建使用兼容板型 `dpi-hdk_lb575ybbn6_n16_qspi_hcpu`，屏幕型号为 `HTM_H070A20_RGB_A01`。工程按 NOR 前 8 MiB 配置容量和分区。
 
-## Build
+## 硬件连接
 
-```sh
-source /Users/wangmian/SiFli-SDK/main/export.sh
-sdk.py -C ai_camera/project build --board=spi-hdk_lb573ub7n6
+OV2640 预览输出 800×600 RGB565，拍照切换到原生 1600×1200 RGB565，再由软件编码为 JPEG。RGB565 每像素 2 字节，低字节先输出。DCMI 使用 HREF 高有效、VSYNC 高极性和 PCLK 上升沿。摄像头 XCLK 为 24 MHz，由 PA02/GPTIM2_CH1 的 pwmt2 通道 1 输出，周期/高电平请求值为 42/21 ns。PA02 输出驱动配置为 DS0=DS1=1（12 mA 档），启动时读回并打印驱动位和引脚寄存器。传感器采用 24 MHz SVGA 30 fps 目标时序：CLKRC=0x00、R_DVP_SP=0x82，COM2=0x02。REG2A/FRARL、ADDVSL/ADDVSH 和 FLL/FLH 均显式清零；COM1=0x0A，COM3=0x3A 自动选择 50/60 Hz 抗闪烁参数，保留自动曝光和增益。初始化完成后读回关键时序寄存器，实际帧率通过上板测量确认。
+
+帧时序依据 [OV2640 原厂应用说明 §3.1](https://www.v-visiontech.com/web/userfiles/download/OV2640CameraModuleSoftwareApplicationNotes.pdf#page=6)，抗闪烁参数采用 §5.4 的 30 fps 组合。RGB565 输出沿用现有窗口、低字节优先和 §13.2 参考表的 D3=0x82。
+
+应用使用按地址范围的数据缓存失效实现，避免异步 GPU 绘制完成时丢弃其他媒体缓冲尚未写回的内容。拍照流程和缓存说明见 [UXGA 拍照说明](docs/uxga_capture_design.md)。
+
+H23 需短接 1–2，将板级 1.2 V 接入摄像头数字电源 DCMI_DVDD（FPC4.10）。`BOARD_DVP_PINMAP_0` 使用以下引脚：
+
+| 信号 | SF32LB57 引脚 |
+| --- | --- |
+| D0 / D1 / D2 / D3 | PA04 / PA08 / PA09 / PA05 |
+| D4 / D5 / D6 / D7 | PA10 / PA07 / PA36 / PA35 |
+| PCLK / HREF / VSYNC | PA03 / PA01 / PA00 |
+| XCLK | PA02 |
+| SCCB SCL / SDA | PA23 / PA22，I2C1，100 kHz |
+| ADC 按键 | PA34，`bat1` 的通道 6 |
+| 屏幕背光 | PA11/GPTIM1_CH4 |
+
+表中的 D0～D7 表示 MCU 接收数据位。OV2640 芯片在 8 位输出模式下使用 D2～D9；部分模组将这八根线重新标为 D0～D7，接线应与模组引脚定义对应。
+
+HTM 触摸复位线没有连接，PA07 用作摄像头 D5。工程关闭 `BSP_USING_TOUCHD`，不启动 GT911 驱动及触摸线程；板级触摸复位包装仍保留，避免触摸电源钩子改变 PA07。
+
+## 编译
+
+源码位于 `D:\program\ai_camera`，SDK 位于 `D:\prog\SiFli-SDK`。工程通过 `SIFLI_PERIPHERALS_ROOT` 引用外部 `SiFli-SDK-Peripherals/camera_framework` 的 Kconfig 和 SCons 入口。框架需包含硬件 DCMI 后端、`camera_start_stream_mode()` 的完整帧双缓冲接口，带超时的 `camera_capture_single_timeout()`、单帧停止接口 `camera_stop_capture()` 和方向设置接口 `camera_set_rotation()`。
+
+在已安装 SDK 工具链的 PowerShell 中执行：
+
+```powershell
+Set-Location D:\prog\SiFli-SDK
+.\export.ps1
+$env:SIFLI_PERIPHERALS_ROOT = 'D:/OpenSiFli/SiFli-SDK-Peripherals'
+Set-Location D:\program\ai_camera\project
+scons --board=dpi-hdk_lb575ybbn6_n16_qspi_hcpu -j8
 ```
 
-## M1 board acceptance
-
-1. 烧录 `project/build_spi-hdk_lb573ub7n6_hcpu/sftool_param.json` 生成的镜像集。
-2. 在 Android 手机开启“蓝牙网络共享”，并完成与开发板配对。
-3. 串口依次确认以下日志：
-
-   ```text
-   learning: Bluetooth stack ready
-   learning: pairing complete, PAN connect scheduled
-   learning: PAN profile connected, waiting for DHCP
-   learning: PAN ready, b0 has IPv4
-   ```
-
-4. 执行 `ifconfig`，确认 `b0` 已分配非零 IPv4 地址。
-5. 关闭手机蓝牙网络共享，确认日志出现有限次数的 `learning: PAN retry n/5`；重新开启共享后，确认再次出现 `PAN ready`，不需要重启开发板。
-
-构建成功只证明目标固件生成；配对、PAN、DHCP 和断线恢复必须以上述实板日志验收。
-
-## M2 audio loopback
-
-本板使用专用模拟麦克风输入和 PA51 控制的板载功放。烧录后，在串口执行：
+构建产物位于：
 
 ```text
-ai_audio_loopback
+D:\program\ai_camera\project\build_dpi-hdk_lb575ybbn6_n16_qspi_hcpu
 ```
 
-该命令以 16 kHz、16-bit、单声道运行 10 秒，将默认 MIC0 的音频回送至扬声器；可传 `1`～`60` 指定秒数。验收时记录是否听到连续人声、是否有爆音或啸叫，以及串口中 `sifli_aw8155_start` / `sifli_aw8155_stop` 的功放控制日志。
+`main.bin` 是主应用镜像；`sftool_param.json` 包含本次构建的烧录镜像及地址。工程的 `proj.py` 选择 `board_8m.conf`，使主应用、bootloader 和 ftab 使用相同的 8 MiB NOR 容量配置及工程级分区表。
 
-## M3 XiaoZhi activation and WebSocket
+## 界面使用
 
-M1 已确认 `b0` 获得 IPv4 后，执行：
+三个按键共用 PA34，由 SDK 按键库消抖后通过 ADC 电压识别。下表的编号对应板级 ADC 配置顺序；实体按键的位置以实测识别为准。
 
-```text
-ai_xiaozhi_activation
-```
-
-该命令以本机 BLE 公共地址生成 Device-ID、以 SHA-256 派生 Client-ID，向小智激活接口请求动态 WebSocket URL 和 token。若显示绑定码，按小智平台完成绑定后重新执行命令；token 不会输出到串口。
-
-绑定完成后执行：
-
-```text
-ai_xiaozhi_connect
-```
-
-验收成功日志为 `xiaozhi: WebSocket connected`，随后可看到服务端的文本帧和
-`xiaozhi: server hello ...`。服务器协商为单声道 Opus 后，固件会建立 16 kHz、
-60 ms 的麦克风上行编码通道，以及按服务端参数解码的扬声器下行播放通道。
-
-收到 `xiaozhi: server hello ... session=...` 后，可用以下命令验证会话监听控制：
-
-```text
-ai_xiaozhi_listen_start
-ai_xiaozhi_listen_stop
-```
-
-`ai_xiaozhi_listen_start` 先发送小智协议的 `listen` 文本帧，再启动 MIC0 的
-Opus 上行；`ai_xiaozhi_listen_stop` 停止采集。需要通过实板确认麦克风上行与
-扬声器下行的实际音频质量。
-
-服务端发来 MCP `initialize` 视觉能力后，串口显示
-`xiaozhi: vision upload capability ready`。若已有 JPEG 文件，可用：
-
-```text
-ai_xiaozhi_vision_upload <jpeg-path> [question]
-```
-
-该命令以服务端提供的 HTTP(S) URL 上传 `question` 和 `file` 两个 multipart
-字段；仅当服务端提供 token 时才发送 Bearer 认证。URL 和 token 只保存在 RAM，
-不会打印到串口或持久化。
-
-## M4 Arducam OV2640 bring-up
-
-前期拍照验证使用 Arducam OV2640 SPI FIFO。SPI-HDK 原理图没有 Arducam 专用
-连接器，因此从 J1 扩展口跳线连接：
-
-| Arducam signal | SF32LB573 pin | Function |
+| 按键 | 配置电压范围 | 操作 |
 | --- | --- | --- |
-| MOSI | PA37 | SPI2_DIO |
-| MISO | PA38 | SPI2_DI |
-| SCLK | PA39 | SPI2_CLK |
-| CS | PA40 | SPI2_CS |
-| SCCB SDA | PA20 | I2C1_SDA |
-| SCCB SCL | PA27 | I2C1_SCL |
-| 3V3 / GND | 3V3 / GND | Module power |
+| 键 1 | 2973 ± 190 mV | 移到上一个可用控件，按住只移动一次。 |
+| 键 2 | 2578 ± 190 mV | 移到下一个可用控件，按住只移动一次。 |
+| 键 3 | 2185 ± 190 mV | 短按确认；首页长按约 1 秒切换 0°/180°，图库或照片页长按返回，松开后不再触发确认。 |
 
-PA20 和 PA27 与 FT6146 触控共用 I2C1；二者 I2C 地址不同，可以共线。不要将
-Arducam 的 SPI 线接到 DCMI FPC：该 FPC 上的 PA37、PA38、PA39、PA40 分别承担
-VSYNC、PWDN、MCLK 和 GND，不是 SPI 信号。
+黄色边框表示当前选中的按钮或照片。选择时自动跳过隐藏或禁用的控件，并可首尾循环。按键回调仅传递事件；界面线程处理选择、确认与返回。保存或加载期间忽略按键操作。
 
-烧录后，在串口执行：
+- 首页左侧显示 800×600 实时预览，右侧显示操作按钮、状态和最新 6 张照片缩略图。默认选中“拍摄”，短按键 3 采集并保存原生 1600×1200 照片，成功后刷新最近照片。
+- 选择“打开图库”并确认进入图库。每页显示 10 张照片，按编号从新到旧排列；选择“上一页”或“下一页”并确认即可翻页。
+- 选择缩略图并确认，查看完整照片；底部显示原始分辨率、JPEG 格式和文件大小。照片解码到 800×600 后缩放到信息栏上方显示。大图回放时，键 1 查看上一张、键 2 查看下一张，沿用图库从新到旧的顺序并支持跨页切换；到达第一张或最后一张时保持当前照片。短按键 3 或长按键 3 返回：首页进入时返回首页，图库进入时返回当前照片所在页。
+- 在图库选择“返回”或长按键 3，可回到实时预览；在首页长按键 3，可将画面旋转 180°，再次长按恢复原方向。方向同时用于预览和新拍照片，保存到 NOR 存储，复位或重新上电后自动恢复；切换分辨率及故障重开后也保持所选方向。浏览图库或照片期间暂停实时采集，返回首页后恢复预览。
 
-```text
-ai_camera_capture
-```
+拍照期间，预览区域依次显示“拍摄中...”“保存中...”和恢复阶段的“加载中...”；新预览帧到达后恢复画面。照片保存尺寸为 1600×1200，共 1,920,000 像素。模式切换、共享缓冲与测试方法见 [UXGA 拍照说明](docs/uxga_capture_design.md)。
 
-该命令不依赖 PAN 或小智连接状态。成功时会打印 JPEG 长度，保存
-`/photo/latest.jpg` 及递增编号照片到板载 NOR 的 6 MB `fs_root` 分区。若当前
-WebSocket 会话已经协商到小智视觉能力，则同一 JPEG 会继续上传识别。
+## 图像处理
 
-屏幕 `PHOTO` 按键和实体 KEY2 在小智就绪状态下走相同拍照路径。Arducam 是静态
-JPEG 验证后端；640x480、15 fps 的实时预览仍等待 OV2640 DVP 采集通路可用。
+摄像头框架负责 OV2640 的识别、寄存器配置及 DCMI 启停。预览使用 SVGA（800×600）和 RGB565，每帧 960,000 字节。采集采用 `CAMERA_STREAM_MODE_FRAME`，两个按 64 字节对齐、连续排列的完整帧缓冲区组成 1,920,000 字节的环形区；每个缓冲区的配置容量仍为单帧大小。DCMI 连续采集，DMA 交替写入这两帧。
+
+DMA 写完第一帧时产生半缓冲通知（HT），写完第二帧时产生全缓冲通知（TC）。两种通知各对应一个完整图像。框架线程确认源读取和目标写入均已离开该缓冲区后，提交完整帧事件；`cam_stream` 每次复制 800×600 像素到独立图像缓冲区。30 fps 连续输入下，完整帧可读窗口约为一帧周期，实际可用时间需扣除 DMA 尾部写入、通知和线程调度延迟。
+
+线程在 EPIC 复制前后调用框架的完整帧有效性检查。检查包括缓冲区地址、帧序号、DMA 源计数、目标剩余写入量及待处理中断，跨过覆盖边界的图像不会发布。没有可写槽位、源帧失效或复制失败时，丢弃该帧。DCMI 的帧完成、溢出、状态机错误、包长错误和场同步中断配置保持开启。
+
+预览期间，应用另保留三块独立的完整图像缓冲区，通过引用计数管理显示和媒体操作占用；预览 DMA 不写入这些缓冲区。拍照时，两个 DMA 帧与其中两个独立帧通过显式 `union` 合并为 3,840,000 字节的 UXGA 原图区；另一块 960,000 字节帧用于 JPEG 输出。复用前等待显示读取结束、停止预览 DMA 并确认缓冲已无使用者，编码和保存结束后再恢复预览布局。界面切换图像前等待 EPIC 完成读取，再释放旧图像。摄像头复制通过本次操作的最终完成回调唤醒采集线程，正常路径只等待自己的全部复制分块和缓存维护完成。提交失败或等待超时后，应用保持缓冲区及回调上下文有效，调用共享驱动的错误处理，并在驱动正常返回且本次完成回调到达后返回错误。当前 SDK 启用了 EPIC 调试断言：若共享驱动等待硬件完成超时，会触发断言，不保证自动恢复采集。
+
+启动日志中的 `framebuffer color depth(24) mismatch` 来自 LCD 静态 RGB888 输出配置与 LVGL 的 16 位颜色深度比较。LCD 适配层随后按 LVGL 配置设置 RGB565 内存输入；LCDC 分别配置内存输入格式和屏幕输出格式，软件路径直接提交 RGB565 缓冲区，没有增加一次整帧软件转换。
+
+LVGL 使用两块位于 PSRAM 的 1024×600 RGB565 整屏缓冲。每次刷新完成整屏绘制和缓存写回后直接提交 LCD，等待 LCD 换帧完成后再重用另一块缓冲。两块显示缓冲共占 2,457,600 字节。实时图像在 `lv_task_handler()` 返回后切换；刷新流程已完成本次 UI 的 EPIC 读取，应用先保留新帧引用，再替换图像描述并释放旧帧。LVGL 返回计时器已到期时，UI 线程只休眠 1 个系统 tick，为采集线程保留运行机会；其他轮询休眠不超过 10 ms。
+
+首页取得有效、不透明的 800×600 预览图像后，根对象仅绘制右侧 224×600 区域的黑色背景；左侧由预览图像完整覆盖。根对象绘制结束后恢复原裁剪范围，随后照常绘制图像和其他子对象。每次整屏刷新减少 960,000 字节的背景写入；加载、隐藏或图像不满足完整覆盖条件时保留原背景绘制。
+
+| 线程 | 职责 |
+| --- | --- |
+| `cam_stream` | 管理传感器配置与采集启停；预览时复制和发布完整帧，拍照时切换 UXGA、采集原图并恢复 SVGA。 |
+| `cam_media` | 执行 JPEG 编码、照片保存、目录分页及 JPEG 解码。 |
+| `camera_ui` | 处理 LVGL 显示和 ADC 按键操作，在拍照提示完成显示后提交请求，显示阶段提示和照片信息。 |
+
+启动时先由媒体线程读取保存的画面方向，采集线程按该方向预先初始化摄像头，与屏幕初始化并行；全部传感器配置成功后，应用额外等待 200 ms。DCMI 采集和图像复制仍在界面首屏提交、预览启用后才启动。拍照时，采集线程进入 UXGA RGB565 模式，丢弃前十张完整过渡帧，采集并保存第十一张完整帧；媒体线程编码和保存照片期间，采集线程提前恢复原预览寄存器配置；编码和保存结束、寄存器配置完成后才启动预览 DMA，再丢弃两张预览帧。配置失败时由最终恢复步骤重试，必要时关闭重开。拍摄和保存结果与预览恢复结果分别记录，恢复失败时尝试关闭重开。浏览照片时，原生 UXGA 照片按 1/2 解码为 800×600、按 1/8 解码为 200×150；原有 SVGA 照片保持原尺寸和 1/4 解码。缩略图缓存在内存中，JPEG 临时数据与完整照片复用空闲的独立图像缓冲区。
+
+## 帧率统计
+
+每次成功启动采集后，`camera.stream` 输出 `mode=frame buffers=2 frame_bytes=960000`。`camera.dma` 输出 DCMI 和 DPI LCD 的 DMA 句柄地址、状态、通道索引及通道控制寄存器快照，DCMI 还输出 `dma_cr`。`dma1_ch=1..8` 表示活动句柄的地址和索引同时匹配该 DMA1 通道；未满足条件时为 0。快照在同一短临界区内读取，恢复中断后打印，不写 DMA 配置。
+
+预览运行时，串口每约 5 秒输出一行 `camera.fps`。统计使用实际经过的系统 tick 换算，单位为帧/秒，保留一位小数。
+
+| 字段 | 统计口径 |
+| --- | --- |
+| `received` | 应用取出的完整帧事件速率；HT 和 TC 各对应一帧。取出后因图像过期等原因放弃处理的事件仍计入。 |
+| `published` | 整帧复制成功、通过后验有效性检查并发布图像的速率。 |
+| `displayed` | LCD 驱动完成换帧后，不同预览图像的显示速率；同一图像重复刷新和图库刷新不计入。 |
+| `frames` | 同一窗口内接收、发布、显示三个计数，按此顺序以 `/` 分隔。 |
+| `window_ms` | 本次统计窗口的实际时长，单位为毫秒。 |
+
+`received` 表示应用消费通知的速度，`displayed` 表示预览图像更新速度，分别区别于传感器物理输出频率和 LCD 扫描频率。暂停预览或重新启动采集时重置窗口，停止期间不输出帧率。计数和窗口快照使用已有互斥锁，汇总打印在界面线程循环中执行。
+
+同一窗口还输出 `camera.drop` 和一行 `camera.copy`。每个已取出但未发布的完整帧事件只记录一个丢弃原因。窗口边界处，接收计数与后续发布或丢弃可能落入相邻窗口。FRAME 模式使用最新帧替换尚未消费的旧事件；未交付应用的图像不计入 `received`。
+
+| `camera.drop` 字段 | 含义 |
+| --- | --- |
+| `no_slot` | 收到完整帧后，没有可写的独立图像缓冲区。 |
+| `stale` | 开始复制之前，源帧有效性检查已经失败。 |
+| `copy` | EPIC 操作返回错误或超时。 |
+| `late` | EPIC 返回成功，但紧接着进行的源帧有效性检查失败。 |
+| `queue_total` | 最近一次成功取帧后读取的框架累计丢弃事件数，包含队列替换及框架过滤；重新启动流时归零，不按 5 秒窗口清零。它不覆盖后端尚未提交到框架的图像。 |
+
+`camera.copy` 的 `engine=epic scope=frame` 表示一次样本复制一个 800×600 完整图像；`n` 为该窗口实际尝试复制的次数。已经失效而未进入复制的帧不计入 `age` 样本，不能用较低的 `age` 排除这类通知消费延迟。各耗时按 `平均值/最大值` 输出，单位为毫秒，精度受系统 tick 限制：`age` 从 DMA 通知在 ISR 中记录时间戳算到开始处理，不包含硬件中断响应之前的延迟；`total` 包含源缓存维护、提交、完成等待及必要的错误清理；`submit` 是 `drv_epic_copy` 调用耗时，包含获取共享 EPIC 的排队时间；`resume` 从本次完成回调算到线程完成专用信号量等待，仅用于提交成功且首次专用等待成功的调用；提交失败或等待超时后的恢复路径记为零。`late` 只证明检查时源帧已失效，不能区分源数据在复制过程中失效还是复制完成后、线程恢复检查前失效。
+
+实时预览取得首帧后，`camera.ui` 另按独立的约 5 秒窗口汇总 UI 耗时；切换到图库或照片页时清空统计。`handler` 为一次 `lv_task_handler` 的总耗时；`frame_update` 为成功取得新帧时，从尝试取帧到替换图像描述并释放旧帧的耗时；`flush_total` 包含整屏缓存维护、显示提交和 LCD 完成等待；`idle` 从调用线程休眠算到恢复运行，包含休眠到期后的调度延迟。各项输出 `平均值/最大值`，单位毫秒，`n` 为各自样本数。没有取得新帧的轮询不计入 `frame_update`。`handler` 已包含内部的 `flush_total`，不能相加；这些值包含线程阻塞和被抢占的时间。UI 窗口与 `camera.fps` 独立，应依据各自的 `window_ms` 解读。
+
+## 照片存储
+
+照片文件系统为 ELM/FatFs，使用 5 MiB NOR 分区，设备名为 `root`，挂载到 `/`，照片目录为 `/photo`。分区表位于 `project/dpi-hdk_lb575ybbn6_n16_qspi_hcpu/ptab.json`。
+
+| 分区 | 起始地址 | 大小 |
+| --- | --- | --- |
+| 主应用 | `0x14020000` | 1 MiB |
+| ACPU 镜像 | `0x14120000` | 256 KiB |
+| DFU 镜像 | `0x14160000` | 384 KiB |
+| DFU 下载区 | `0x141C0000` | 1152 KiB |
+| 照片文件系统 `root` | `0x142E0000` | 5 MiB |
+| DFU KV | `0x147E0000` | 16 KiB |
+| BLE KV | `0x147E4000` | 16 KiB |
+
+启动镜像和分区表使用 Flash 前 128 KiB 的板型布局。存储模块在访问分区前核对 NOR 容量、设备几何信息和地址映射。NOR 写入使用 DMA；存储初始化检查 DMA 句柄和空闲状态，成功后输出 `NOR write mode=DMA`。
+
+JPEG 编码和图库读取的容量均为 960,000 字节。编码依次尝试高、中、低质量，遇到失败时有限重试；质量调整保持 1600×1200 像素尺寸。所有质量均失败时不提交照片文件。
+
+新照片采用 `photo_0000000001.jpg` 形式的递增编号。启动时扫描已有文件恢复编号，并兼容 `photo_001.jpg` 等旧数字文件名。保存先写临时文件，完成同步和关闭后再重命名为正式照片。
+
+照片数量由 JPEG 大小和分区可用空间决定。空间不足时，模块删除最旧照片，为新照片和目录更新腾出空间。旧固件留下的 `latest.jpg` 不参与图库列表，空间不足时优先回收。
+
+挂载后重新计算 FAT 空闲簇。照片目录不存在时按空相册处理，在首次保存时创建目录。首次挂载失败且整个分区均为擦除值 `0xFF` 时，模块自动格式化并重新挂载；非空分区挂载失败时返回错误。保存前清理本模块遗留的未完成临时文件。

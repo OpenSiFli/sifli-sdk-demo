@@ -1,0 +1,7 @@
+from building import *
+
+cwd = GetCurrentDir()
+src = Glob('*.c')
+group = DefineGroup('Photo Storage', src, depend=[''], CPPPATH=[cwd])
+
+Return('group')

@@ -1,0 +1,10 @@
+import os
+from building import *
+
+cwd = GetCurrentDir()
+group = DefineGroup('GC032A Serial Camera', ['gc032a_serial.c', 'gc032a_config.c'],
+                    depend=['AI_CAMERA_USING_GC032A'], CPPPATH=[cwd])
+group.extend(SConscript(os.path.join(cwd, 'jpeg', 'SConscript'),
+                        variant_dir='jpeg', duplicate=0))
+Return('group')
+

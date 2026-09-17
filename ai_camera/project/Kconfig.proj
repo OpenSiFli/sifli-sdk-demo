@@ -1,37 +1,10 @@
-menu "SF32LB573 learning camera"
-
-config LEARNING_CAMERA_BT_NAME
-    string "Bluetooth device name"
-    default "sifli-learning-camera"
-
-config LEARNING_CAMERA_PAN_CONNECT_DELAY_MS
-    int "PAN connect delay after pairing (ms)"
-    default 3000
-    range 1000 10000
-
-config LEARNING_CAMERA_PAN_RETRY_DELAY_MS
-    int "PAN reconnect delay (ms)"
-    default 10000
-    range 1000 60000
-
-config LEARNING_CAMERA_PAN_RETRY_MAX
-    int "PAN reconnect attempts"
-    default 5
-    range 1 20
-
-endmenu
-
-config AI_CAMERA_OV2640_DVP_RESERVED
-    bool "Reserve OV2640 DVP camera interface"
-    default y
-    help
-      Reserve the OV2640 DVP integration point. SF32LB573 DVP capture is not
-      available in the current platform, so this option does not enable a
-      camera driver or claim preview support.
-
 config CUSTOM_MEM_MAP
     bool
     select custom_mem_map
     default y if !SOC_SIMULATOR
 
-rsource "../../../SiFli-SDK-Peripherals/camera_framework/Kconfig"
+config AI_CAMERA_SW_JPEG_ENCODER
+    bool
+    default y
+
+source "$SIFLI_PERIPHERALS_ROOT/camera_framework/Kconfig"

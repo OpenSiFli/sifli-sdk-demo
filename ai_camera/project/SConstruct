@@ -6,6 +6,16 @@ if not SIFLI_SDK:
     print('Please source the SiFli SDK export script first.')
     exit()
 
+peripherals_root = os.getenv('SIFLI_PERIPHERALS_ROOT', '').strip()
+if not peripherals_root:
+    raise SystemExit('Set SIFLI_PERIPHERALS_ROOT to the SiFli-SDK-Peripherals repository.')
+peripherals_root = os.path.realpath(os.path.expanduser(peripherals_root)).replace('\\', '/')
+for entry in ('Kconfig', 'SConscript'):
+    framework_entry = os.path.join(peripherals_root, 'camera_framework', entry)
+    if not os.path.isfile(framework_entry):
+        raise SystemExit('Camera framework entry not found: ' + framework_entry)
+os.environ['SIFLI_PERIPHERALS_ROOT'] = peripherals_root
+
 from building import *
 
 PrepareEnv()

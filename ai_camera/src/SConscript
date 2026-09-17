@@ -2,9 +2,21 @@ import os
 from building import *
 
 cwd = GetCurrentDir()
-src = Glob('*.c')
-camera_root = os.path.normpath(
-    os.path.join(cwd, '../../../SiFli-SDK-Peripherals/camera_framework'))
-group = DefineGroup('Applications', src, depend=[''],
-                    CPPPATH=['.', os.path.join(camera_root, 'core/handle')])
+src = ['main.c', 'camera_sensor.c', 'camera_board.c', 'camera_service.c',
+       'camera_epic.c', 'camera_cache.c', 'camera_keys.c', 'camera_ui.c', 'camera_ui_font.c', 'camera_image.c']
+
+link_flags = ['-Wl,--wrap=BSP_TP_PowerUp',
+              '-Wl,--wrap=BSP_TP_PowerDown',
+              '-Wl,--wrap=BSP_TP_Reset']
+
+group = DefineGroup('Camera Application', src, depend=[''],
+                    CPPDEFINES=['FRAME_BUFFER_IN_PSRAM'],
+                    LINKFLAGS=link_flags,
+                    CPPPATH=[cwd, os.path.join(cwd, 'photo_storage')])
+group.extend(SConscript(os.path.join(cwd, 'gc032a', 'jpeg', 'SConscript'),
+                        variant_dir='camera_jpeg', duplicate=0))
+group.extend(SConscript(os.path.join(cwd, 'photo_storage', 'SConscript'),
+                        variant_dir='photo_storage', duplicate=0))
+group.extend(SConscript(os.path.join(cwd, 'vendor', 'camera_tjpgd', 'SConscript'),
+                        variant_dir='camera_tjpgd', duplicate=0))
 Return('group')

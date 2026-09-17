@@ -8,17 +8,26 @@
 #include <mem_section.h>
 #include <rtthread.h>
 #include <mem_map.h>
+#include <string.h>
 
-#include "camera_handle.h"
+#include "camera_sw_jpeg_encoder.h"
 #include "device_ui.h"
+#include "gc032a_camera.h"
+#include "gc032a_preview.h"
 #include "xiaozhi_vision.h"
 
 #define AI_CAMERA_PHOTO_DIR "/photo"
 #define AI_CAMERA_PHOTO_PATH "/photo/latest.jpg"
 #define AI_CAMERA_FILESYSTEM_DEVICE "camfs"
-#define AI_CAMERA_PHOTO_BUFFER_SIZE (2U * 1024U * 1024U)
-#define AI_CAMERA_CAPTURE_STACK_SIZE 3072U
+#define AI_CAMERA_PHOTO_BUFFER_SIZE (512U * 1024U)
+#define AI_CAMERA_RAW_WIDTH GC032A_FRAME_WIDTH
+#define AI_CAMERA_RAW_HEIGHT GC032A_FRAME_HEIGHT
+#define AI_CAMERA_RAW_BUFFER_SIZE GC032A_FRAME_SIZE
+#define AI_CAMERA_CAPTURE_STACK_SIZE 8192U
 #define AI_CAMERA_CAPTURE_PRIORITY 18U
+/* The preview hands over its next complete frame, and one frame currently costs
+ * ~2.4 s of capture plus ~0.4 s of render, so the wait has to cover a period. */
+#define AI_CAMERA_FRAME_TIMEOUT_MS 5000U
 
 static rt_sem_t s_capture_sem;
 static rt_mutex_t s_capture_lock;
@@ -27,11 +36,15 @@ static rt_bool_t s_capture_pending;
 static rt_bool_t s_capture_initialized;
 static rt_bool_t s_filesystem_registered;
 static rt_bool_t s_filesystem_ready;
-static camera_handler_instance_t *s_camera;
+static volatile rt_bool_t s_format_running;
 static unsigned int s_photo_index;
 
 static uint8_t s_photo_buffer[AI_CAMERA_PHOTO_BUFFER_SIZE]
     L2_RET_BSS_SECT(s_photo_buffer);
+static uint8_t s_raw_buffer[AI_CAMERA_RAW_BUFFER_SIZE]
+    L2_RET_BSS_SECT(s_raw_buffer);
+static uint8_t s_jpeg_workspace[CAMERA_SW_JPEG_ENCODER_STATIC_WORKSPACE_SIZE]
+    __attribute__((aligned(8)));
 
 static int ai_camera_save_file(const char *path, const void *buffer,
                                rt_size_t size)
@@ -39,9 +52,17 @@ static int ai_camera_save_file(const char *path, const void *buffer,
     int fd;
     rt_size_t written = 0U;
 
+    rt_kprintf("camera: writing %s (%u bytes)\n", path, (unsigned int)size);
     fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0);
     if (fd < 0)
+    {
+        rt_kprintf("camera: open %s failed (errno %d)\n", path, errno);
+        if (errno == -EIO)
+            rt_kprintf("camera: volume I/O error, \"ai_camera_format "
+                       "confirm\" rebuilds it\n");
         return -1;
+    }
+    rt_kprintf("camera: %s opened\n", path);
     while (written < size)
     {
         int result = write(fd, (const uint8_t *)buffer + written,
@@ -49,14 +70,46 @@ static int ai_camera_save_file(const char *path, const void *buffer,
 
         if (result <= 0)
         {
+            rt_kprintf("camera: write %s failed at %u/%u (errno %d)\n", path,
+                       (unsigned int)written, (unsigned int)size, errno);
             close(fd);
             return -1;
         }
         written += (rt_size_t)result;
     }
-    if (fsync(fd) != 0 || close(fd) != 0)
+    if (fsync(fd) != 0)
+    {
+        rt_kprintf("camera: fsync %s failed (errno %d)\n", path, errno);
+        close(fd);
         return -1;
+    }
+    if (close(fd) != 0)
+    {
+        rt_kprintf("camera: close %s failed (errno %d)\n", path, errno);
+        return -1;
+    }
     return 0;
+}
+
+/* DFS hands the ELM result to rt_set_errno() without negating it, so an
+ * already existing directory shows up as errno == -EEXIST (not +EEXIST) and the
+ * usual errno check cannot be used.  Confirm the path instead. */
+static int ai_camera_ensure_photo_dir(void)
+{
+    struct stat info;
+
+    if (stat(AI_CAMERA_PHOTO_DIR, &info) == 0 &&
+        (info.st_mode & S_IFDIR) != 0)
+        return 0;
+    rt_kprintf("camera: creating %s\n", AI_CAMERA_PHOTO_DIR);
+    if (mkdir(AI_CAMERA_PHOTO_DIR, 0) == 0)
+        return 0;
+    if (stat(AI_CAMERA_PHOTO_DIR, &info) == 0 &&
+        (info.st_mode & S_IFDIR) != 0)
+        return 0;
+    rt_kprintf("camera: cannot create %s (errno %d)\n", AI_CAMERA_PHOTO_DIR,
+               errno);
+    return -1;
 }
 
 static int ai_camera_filesystem_init(void)
@@ -121,30 +174,40 @@ static int ai_camera_filesystem_init(void)
 
 static int ai_camera_prepare(void)
 {
-    camera_capture_config_t config = {
-        .pixformat = PIXFORMAT_JPEG,
-        .framesize = FRAMESIZE_UXGA,
-        .quality = 10U,
-    };
-    camera_handle_status_t status;
+    int status = gc032a_camera_init();
 
-    if (s_camera != RT_NULL)
-        return 0;
-    status = camera_handler_instance_init(&s_camera);
-    if (status != CAMERA_OK)
+    if (status != GC032A_CAMERA_OK)
     {
         rt_kprintf("camera: init failed %d\n", status);
         return -1;
     }
-    status = camera_change_settings(s_camera, &config);
-    if (status != CAMERA_OK)
-    {
-        rt_kprintf("camera: configure UXGA JPEG failed %d\n", status);
-        camera_deinit(&s_camera);
-        return -1;
-    }
-    rt_kprintf("camera: Arducam OV2640 still mode 1600x1200 JPEG\n");
+    rt_kprintf("camera: GC032A 2-line serial 640x480 RGB565\n");
     return 0;
+}
+
+/* raw points at one 640x480 RGB565 frame: either the one-shot capture buffer or
+ * the frame frozen by the live preview. */
+static int ai_camera_encode_jpeg(uint8_t *raw, rt_size_t raw_size,
+                                 uint32_t *jpeg_size)
+{
+    camera_sw_jpeg_encoder_t encoder;
+    camera_sw_jpeg_frame_t frame = {
+        .data = raw,
+        .width = AI_CAMERA_RAW_WIDTH,
+        .height = AI_CAMERA_RAW_HEIGHT,
+        .stride = AI_CAMERA_RAW_WIDTH * 2U,
+        .pixel_format = CAMERA_SW_JPEG_PIXEL_RGB565_BE,
+    };
+
+    if (raw == RT_NULL || raw_size != sizeof(s_raw_buffer) ||
+        jpeg_size == RT_NULL)
+        return -1;
+    if (camera_sw_jpeg_encoder_init(&encoder, s_jpeg_workspace,
+                                    sizeof(s_jpeg_workspace)) != 0)
+        return -1;
+    return camera_sw_jpeg_encode_to_buffer(
+        &encoder, &frame, CAMERA_SW_JPEG_QUALITY_HIGH, s_photo_buffer,
+        sizeof(s_photo_buffer), jpeg_size);
 }
 
 static void ai_camera_capture_worker(void *parameter)
@@ -152,33 +215,68 @@ static void ai_camera_capture_worker(void *parameter)
     (void)parameter;
     for (;;)
     {
-        camera_capture_request_t request;
-        camera_handle_status_t status;
+        int status;
+        size_t captured;
+        uint8_t *raw_frame = RT_NULL;
+        uint32_t raw_size;
+        uint32_t jpeg_size;
         char numbered_path[32];
         char response[AI_XIAOZHI_VISION_RESPONSE_MAX];
 
         rt_sem_take(s_capture_sem, RT_WAITING_FOREVER);
+        if (s_format_running)
+        {
+            rt_kprintf("camera: format in progress, try again\n");
+            goto capture_error;
+        }
         if (ai_camera_filesystem_init() < 0)
             goto capture_error;
-        if (ai_camera_prepare() < 0)
-            goto capture_error;
+        if (gc032a_preview_is_running())
+        {
+            /* The preview thread hands over its next complete frame, so the
+             * JPEG is the picture on screen and the DCMI is never driven
+             * behind the preview thread's back. */
+            status = gc032a_preview_deliver_frame(s_raw_buffer,
+                                                  sizeof(s_raw_buffer),
+                                                  AI_CAMERA_FRAME_TIMEOUT_MS);
+            if (status != GC032A_CAMERA_OK)
+            {
+                rt_kprintf("camera: preview frame handover failed (%d)\n",
+                           status);
+                goto capture_error;
+            }
+            raw_frame = s_raw_buffer;
+            raw_size = GC032A_FRAME_SIZE;
+        }
+        else
+        {
+            if (ai_camera_prepare() < 0)
+                goto capture_error;
+            captured = 0U;
+            status = gc032a_camera_capture_one(s_raw_buffer,
+                                               sizeof(s_raw_buffer),
+                                               &captured);
+            if (status != GC032A_CAMERA_OK || captured == 0U)
+            {
+                rt_kprintf("camera: capture failed status=%d\n", status);
+                (void)gc032a_camera_recover();
+                goto capture_error;
+            }
+            raw_frame = s_raw_buffer;
+            raw_size = (uint32_t)captured;
+        }
 
-        request.buffer = s_photo_buffer;
-        request.buffer_size = sizeof(s_photo_buffer);
-        request.frame_size = 0U;
-        status = camera_capture_single(s_camera, &request);
-        if (status != CAMERA_OK || request.frame_size == 0U)
         {
-            rt_kprintf("camera: capture failed status=%d\n", status);
-            goto capture_error;
+            if (ai_camera_encode_jpeg(raw_frame, raw_size, &jpeg_size) != 0)
+            {
+                rt_kprintf("camera: RGB565 to JPEG encode failed\n");
+                goto capture_error;
+            }
         }
-        if (mkdir(AI_CAMERA_PHOTO_DIR, 0) != 0 && errno != EEXIST)
-        {
-            rt_kprintf("camera: cannot create %s\n", AI_CAMERA_PHOTO_DIR);
+        if (ai_camera_ensure_photo_dir() < 0)
             goto capture_error;
-        }
         if (ai_camera_save_file(AI_CAMERA_PHOTO_PATH, s_photo_buffer,
-                                request.frame_size) < 0)
+                                jpeg_size) < 0)
         {
             rt_kprintf("camera: save %s failed\n", AI_CAMERA_PHOTO_PATH);
             goto capture_error;
@@ -187,9 +285,9 @@ static void ai_camera_capture_worker(void *parameter)
         rt_snprintf(numbered_path, sizeof(numbered_path),
                     AI_CAMERA_PHOTO_DIR "/photo_%03u.jpg", s_photo_index);
         (void)ai_camera_save_file(numbered_path, s_photo_buffer,
-                                  request.frame_size);
+                                  jpeg_size);
         rt_kprintf("camera: saved %s (%u bytes)\n", AI_CAMERA_PHOTO_PATH,
-                   (unsigned int)request.frame_size);
+                   (unsigned int)jpeg_size);
         if (ai_xiaozhi_vision_upload_file(
                 AI_CAMERA_PHOTO_PATH, "Please describe this image.", response,
                 sizeof(response)) == 0)
@@ -257,4 +355,78 @@ static void ai_camera_capture_command(void)
         rt_kprintf("camera: capture queued\n");
 }
 MSH_CMD_EXPORT_ALIAS(ai_camera_capture_command, ai_camera_capture,
-                     Capture Arducam OV2640 JPEG to /photo/latest.jpg);
+                     Capture GC032A DVP frame to /photo/latest.jpg);
+
+/* Rebuilding the volume drops every photo, so it takes an explicit argument.
+ * The work happens on its own thread with a log line per step: erasing and
+ * rewriting the volume can take seconds and must neither block the shell nor
+ * hide where it stopped. */
+static void ai_camera_format_thread(void *parameter)
+{
+    rt_device_t fs_device;
+    int result;
+
+    (void)parameter;
+    if (!s_filesystem_registered)
+    {
+        rt_kprintf("camera: format: registering %s\n",
+                   AI_CAMERA_FILESYSTEM_DEVICE);
+        register_mtd_device(FS_REGION_START_ADDR, FS_REGION_SIZE,
+                            AI_CAMERA_FILESYSTEM_DEVICE);
+        s_filesystem_registered = RT_TRUE;
+    }
+    fs_device = rt_device_find(AI_CAMERA_FILESYSTEM_DEVICE);
+    if (fs_device == RT_NULL)
+    {
+        rt_kprintf("camera: format: %s not found\n",
+                   AI_CAMERA_FILESYSTEM_DEVICE);
+        s_format_running = RT_FALSE;
+        return;
+    }
+    if (dfs_filesystem_get_mounted_path(fs_device) != RT_NULL)
+    {
+        rt_kprintf("camera: format: unmounting /\n");
+        result = dfs_unmount("/");
+        rt_kprintf("camera: format: unmount result=%d\n", result);
+    }
+    rt_kprintf("camera: format: mkfs start\n");
+    result = dfs_mkfs("elm", AI_CAMERA_FILESYSTEM_DEVICE);
+    rt_kprintf("camera: format: mkfs result=%d, mount on next capture\n",
+               result);
+    s_filesystem_ready = RT_FALSE;
+    s_format_running = RT_FALSE;
+}
+
+static void ai_camera_format_command(int argc, char **argv)
+{
+    rt_thread_t thread;
+
+    if (argc < 2 || strcmp(argv[1], "confirm") != 0)
+    {
+        rt_kprintf("camera: this erases every photo; run "
+                   "\"ai_camera_format confirm\" to do it\n");
+        return;
+    }
+    if (s_format_running)
+    {
+        rt_kprintf("camera: format already running\n");
+        return;
+    }
+    if (s_capture_pending)
+    {
+        rt_kprintf("camera: capture in progress, try again\n");
+        return;
+    }
+    thread = rt_thread_create("cam_fmt", ai_camera_format_thread, RT_NULL,
+                              2048U, AI_CAMERA_CAPTURE_PRIORITY, 10U);
+    if (thread == RT_NULL)
+    {
+        rt_kprintf("camera: cannot start the format thread\n");
+        return;
+    }
+    s_format_running = RT_TRUE;
+    rt_thread_startup(thread);
+    rt_kprintf("camera: format started, watch the log\n");
+}
+MSH_CMD_EXPORT_ALIAS(ai_camera_format_command, ai_camera_format,
+                     Rebuild the photo volume);

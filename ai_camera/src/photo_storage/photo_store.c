@@ -36,6 +36,14 @@ static uint32_t s_cluster_bytes;
 
 static rt_bool_t s_default_dma_configured;
 
+/* 1 = drop the NOR DMA engine so program/erase is CPU driven (A/B test). */
+#define PHOTO_STORE_NOR_DMA_DETACH 1
+
+/* Volume signature: records which FS layout created the volume. The helpers are
+ * defined with the rotation record code at the end of this file. */
+static int photo_store_signature_layout_changed(int *changed);
+static int photo_store_signature_write(void);
+
 /* The caller holds photo_fs; inspect the SDK DMA handle under the flash lock. */
 static int photo_store_configure_dma_locked(const char **reason)
 {
@@ -52,6 +60,16 @@ static int photo_store_configure_dma_locked(const char **reason)
         *reason = "nor_handle";
         return -ENODEV;
     }
+
+#if PHOTO_STORE_NOR_DMA_DETACH
+    /* The handle itself stays valid; only the DMA engine is dropped, which
+     * makes the HAL program/erase path CPU-driven. */
+    rt_flash_lock(flash->base);
+    flash->dma = NULL;
+    rt_flash_unlock(flash->base);
+    *reason = "dma_detached";
+    return 0;
+#endif
 
     rt_flash_lock(flash->base);
     result = 0;
@@ -78,6 +96,15 @@ static int photo_store_configure_dma_locked(const char **reason)
     {
         result = -EIO;
         *reason = "dma_error";
+    }
+    else if (candidate->Init.Priority != DMA_PRIORITY_VERY_HIGH)
+    {
+        candidate->Init.Priority = DMA_PRIORITY_VERY_HIGH;
+        if (HAL_DMA_Init(candidate) != HAL_OK)
+        {
+            result = -EIO;
+            *reason = "dma_priority";
+        }
     }
     /* Keep the initialized handle attached so NOR writes use DMA. */
     rt_flash_unlock(flash->base);
@@ -418,7 +445,11 @@ static int photo_store_init_locked(void)
             return result;
         }
         s_default_dma_configured = RT_TRUE;
-        LOG_I("NOR write mode=DMA");
+#if PHOTO_STORE_NOR_DMA_DETACH
+        LOG_I("NOR write mode=CPU driven DMA engine detached");
+#else
+        LOG_I("NOR write mode=DMA priority=very high");
+#endif
     }
     device = rt_device_find(PHOTO_STORE_DEVICE);
     if (device == RT_NULL)
@@ -445,20 +476,42 @@ static int photo_store_init_locked(void)
         return photo_store_error("mount_owner", -EBUSY);
     if (mounted_path == NULL)
     {
+        int layout_changed = 0;
+
+        result = photo_store_signature_layout_changed(&layout_changed);
+        if (result < 0)
+            return photo_store_error("signature_read", result);
         errno = 0;
         if (dfs_mount(PHOTO_STORE_DEVICE, "/", "elm", 0, NULL) != 0)
         {
             mount_error = photo_store_posix_error("mount");
-            result = photo_store_is_erased(device, &geometry);
-            if (result <= 0)
-                return photo_store_error(result < 0 ? "blank_read" : "mount_nonblank",
-                                          result < 0 ? result : mount_error);
-            if (dfs_mkfs("elm", PHOTO_STORE_DEVICE) != 0)
-                return photo_store_error("format_blank", -EIO);
-            errno = 0;
-            if (dfs_mount(PHOTO_STORE_DEVICE, "/", "elm", 0, NULL) != 0)
-                return photo_store_posix_error("mount_formatted");
+            if (layout_changed)
+            {
+                /* The build's FS region differs from the one that created this
+                 * volume, so its superblock cannot be valid here: rebuild it. */
+                LOG_I("fs region changed, rebuilding %s", PHOTO_STORE_DEVICE);
+                if (dfs_mkfs("elm", PHOTO_STORE_DEVICE) != 0)
+                    return photo_store_error("format_layout", -EIO);
+                errno = 0;
+                if (dfs_mount(PHOTO_STORE_DEVICE, "/", "elm", 0, NULL) != 0)
+                    return photo_store_posix_error("mount_layout");
+            }
+            else
+            {
+                result = photo_store_is_erased(device, &geometry);
+                if (result <= 0)
+                    return photo_store_error(result < 0 ? "blank_read" : "mount_nonblank",
+                                              result < 0 ? result : mount_error);
+                if (dfs_mkfs("elm", PHOTO_STORE_DEVICE) != 0)
+                    return photo_store_error("format_blank", -EIO);
+                errno = 0;
+                if (dfs_mount(PHOTO_STORE_DEVICE, "/", "elm", 0, NULL) != 0)
+                    return photo_store_posix_error("mount_formatted");
+            }
         }
+        result = photo_store_signature_write();
+        if (result < 0)
+            return photo_store_error("signature_write", result);
     }
     filesystem = dfs_filesystem_lookup("/");
     if (filesystem == NULL || filesystem->ops == NULL ||
@@ -1044,4 +1097,91 @@ int photo_store_save_rotation(uint16_t degrees)
             break;
     }
     return photo_store_leave(result);
+}
+
+
+#define PHOTO_STORE_SIGNATURE_BYTES 24U
+#define PHOTO_STORE_SIGNATURE_VERSION 1U
+
+typedef struct
+{
+    uint32_t start;
+    uint32_t size;
+    uint32_t generation;
+    int valid;
+} photo_store_signature_t;
+
+/* Invalid content only means "unknown layout"; a read error is reported. */
+static int photo_store_signature_read(photo_store_signature_t *record)
+{
+    uint8_t bytes[PHOTO_STORE_SIGNATURE_BYTES];
+    int amount;
+
+    memset(record, 0, sizeof(*record));
+    amount = rt_flash_read(FS_META_REGION_START_ADDR, bytes, (int)sizeof(bytes));
+    if (amount < 0)
+        return -EIO;
+    if ((size_t)amount != sizeof(bytes))
+        return 0;
+    if (memcmp(bytes, "CPFS", 4U) != 0 || bytes[4] != PHOTO_STORE_SIGNATURE_VERSION ||
+        bytes[5] != 0U || bytes[6] != 0U || bytes[7] != 0U)
+        return 0;
+    if (photo_store_rotation_get32(bytes + 20U) !=
+        photo_store_rotation_crc(bytes, 20U))
+        return 0;
+    record->start = photo_store_rotation_get32(bytes + 8U);
+    record->size = photo_store_rotation_get32(bytes + 12U);
+    record->generation = photo_store_rotation_get32(bytes + 16U);
+    record->valid = 1;
+    return 0;
+}
+
+/* A missing record is treated as "unknown layout" as well: it only decides
+ * whether formatting is allowed after a failed mount, never before one. */
+static int photo_store_signature_layout_changed(int *changed)
+{
+    photo_store_signature_t record;
+    int result;
+
+    *changed = 1;
+    result = photo_store_signature_read(&record);
+    if (result < 0)
+        return result;
+    if (record.valid && record.start == (uint32_t)FS_REGION_START_ADDR &&
+        record.size == (uint32_t)FS_REGION_SIZE)
+        *changed = 0;
+    return 0;
+}
+
+/* Rewrites the record only when it does not already describe this layout, so a
+ * normal boot costs no erase cycle. */
+static int photo_store_signature_write(void)
+{
+    photo_store_signature_t record;
+    uint8_t bytes[PHOTO_STORE_SIGNATURE_BYTES] = {'C', 'P', 'F', 'S',
+                                                  PHOTO_STORE_SIGNATURE_VERSION, 0U, 0U, 0U};
+    uint32_t generation = 1U;
+    int result;
+
+    result = photo_store_signature_read(&record);
+    if (result < 0)
+        return result;
+    if (record.valid && record.start == (uint32_t)FS_REGION_START_ADDR &&
+        record.size == (uint32_t)FS_REGION_SIZE)
+        return 0;
+    if (record.valid)
+        generation = record.generation + 1U;
+    photo_store_rotation_put32(bytes + 8U, (uint32_t)FS_REGION_START_ADDR);
+    photo_store_rotation_put32(bytes + 12U, (uint32_t)FS_REGION_SIZE);
+    photo_store_rotation_put32(bytes + 16U, generation);
+    photo_store_rotation_put32(bytes + 20U, photo_store_rotation_crc(bytes, 20U));
+    if (rt_flash_erase(FS_META_REGION_START_ADDR, (int)FS_META_REGION_SIZE) != RT_EOK)
+        return -EIO;
+    if (rt_flash_write(FS_META_REGION_START_ADDR, bytes, (int)sizeof(bytes)) !=
+        (int)sizeof(bytes))
+        return -EIO;
+    LOG_I("volume signature generation=%u start=0x%08x size=0x%08x",
+          (unsigned int)generation, (unsigned int)FS_REGION_START_ADDR,
+          (unsigned int)FS_REGION_SIZE);
+    return 0;
 }

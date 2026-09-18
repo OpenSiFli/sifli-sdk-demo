@@ -108,6 +108,9 @@ typedef struct
     camera_ui_timing_t frame_update;
     camera_ui_timing_t flush_total;
     camera_ui_timing_t idle;
+    uint32_t source_expired;
+    uint32_t redraw_video_only;
+    uint32_t redraw_sidebar;
 } camera_ui_diag_t;
 
 static camera_ui_diag_t s_ui_diag;
@@ -161,17 +164,20 @@ static void camera_ui_diag_report(void)
     s_ui_diag.active = 1;
 
     /* This preview window is independent of camera.fps; handler includes flush_total. */
-    rt_kprintf("camera.ui: window_ms=%lu avg/max_ms handler=%lu/%lu(n=%lu) "
-               "frame_update=%lu/%lu(n=%lu) flush_total=%lu/%lu(n=%lu) idle=%lu/%lu(n=%lu)\n",
+    rt_kprintf("camera.ui: window_ms=%lu avg/max_ms handler=%lu/%lu(n=%lu) frame_update=%lu/%lu(n=%lu)\n",
                camera_ui_ticks_ms(elapsed),
                camera_ui_timing_avg_ms(&stats.handler), camera_ui_ticks_ms(stats.handler.max_ticks),
                (unsigned long)stats.handler.count,
                camera_ui_timing_avg_ms(&stats.frame_update), camera_ui_ticks_ms(stats.frame_update.max_ticks),
-               (unsigned long)stats.frame_update.count,
+               (unsigned long)stats.frame_update.count);
+    rt_kprintf("camera.ui.flush: avg/max_ms total=%lu/%lu(n=%lu) idle=%lu/%lu(n=%lu)\n",
                camera_ui_timing_avg_ms(&stats.flush_total), camera_ui_ticks_ms(stats.flush_total.max_ticks),
                (unsigned long)stats.flush_total.count,
                camera_ui_timing_avg_ms(&stats.idle), camera_ui_ticks_ms(stats.idle.max_ticks),
                (unsigned long)stats.idle.count);
+    rt_kprintf("camera.ui.redraw: video_only=%lu with_sidebar=%lu source_expired=%lu\n",
+               (unsigned long)stats.redraw_video_only, (unsigned long)stats.redraw_sidebar,
+               (unsigned long)stats.source_expired);
 }
 
 static void camera_ui_status(const char *text)
@@ -310,11 +316,11 @@ static void camera_ui_home_background_event(lv_event_t *event)
 
     right_area = root_area;
     right_area.x1 += CAMERA_LIVE_WIDTH;
-    if (right_area.x1 > right_area.x2 ||
-        !_lv_area_intersect(&background_clip, draw_ctx->clip_area, &right_area))
-        return;
+    if (!_lv_area_intersect(&background_clip, draw_ctx->clip_area, &right_area))
+        lv_area_set(&background_clip, 0, 0, -1, -1);
 
-    /* The opaque live image redraws the left area after this background. */
+    /* The opaque live image redraws the left area after this background.
+     * An empty intersection skips the background during video-only redraws. */
     saved_clip = draw_ctx->clip_area;
     draw_ctx->clip_area = &background_clip;
 }
@@ -900,7 +906,9 @@ static void camera_ui_rotate(void)
 {
     uint32_t token = camera_ui_token();
 
-    if (camera_service_rotate(token) != RT_EOK)
+    /* Rotation warmup uses the same receive buffers as the live image. */
+    camera_ui_release_live();
+    if (s_live_frame.slot >= 0 || camera_service_rotate(token) != RT_EOK)
     {
         camera_ui_status("失败");
         return;
@@ -957,9 +965,10 @@ static void camera_ui_poll_keys(void)
 static void camera_ui_update_live(void)
 {
     camera_live_frame_t next = {.slot = -1};
-    camera_live_frame_t previous;
+    lv_timer_t *refresh = _lv_disp_get_refr_timer(NULL);
     rt_tick_t update_begin;
 
+    lv_timer_resume(refresh);
     if (s_view != CAMERA_VIEW_HOME)
     {
         camera_ui_release_live();
@@ -967,24 +976,30 @@ static void camera_ui_update_live(void)
     }
     if (s_capture_busy)
         return;
+    if (s_live_frame.slot >= 0)
+    {
+        lv_timer_ready(refresh);
+        return;
+    }
     update_begin = rt_tick_get();
     if (camera_service_take_frame(&next) <= 0)
     {
         const char *status = camera_service_camera_status() < 0
                                  ? "相机未就绪"
-                                 : (s_live_frame.slot < 0 ? "加载中" : "");
+                                 : (lv_obj_has_flag(s_live_image, LV_OBJ_FLAG_HIDDEN) ? "加载中" : "");
 
         if (strcmp(lv_label_get_text(s_camera_status), status) != 0)
             lv_label_set_text(s_camera_status, status);
         if (s_capture_prompt_visible && camera_service_camera_status() < 0 &&
             strcmp(lv_label_get_text(s_capture_message), "相机未就绪") != 0)
             camera_ui_capture_prompt("相机未就绪");
+        if (camera_service_camera_status() < 0)
+            lv_obj_add_flag(s_live_image, LV_OBJ_FLAG_HIDDEN);
+        else if (!lv_obj_has_flag(s_live_image, LV_OBJ_FLAG_HIDDEN))
+            lv_timer_pause(refresh);
         return;
     }
-    /* Called only by the outer UI loop after lv_task_handler(). Its full
-     * flush waits for GPU completion before LCD submission, so previous UI
-     * frame reads have retired before the descriptor and reference change. */
-    previous = s_live_frame;
+    /* Select the newest completed DMA source immediately before rendering. */
     lv_img_cache_invalidate_src(&s_live_image_dsc);
     camera_ui_image_desc(&s_live_image_dsc, next.pixels,
                           CAMERA_LIVE_WIDTH, CAMERA_LIVE_HEIGHT);
@@ -997,21 +1012,127 @@ static void camera_ui_update_live(void)
         lv_obj_add_flag(s_capture_overlay, LV_OBJ_FLAG_HIDDEN);
         s_capture_prompt_visible = 0;
     }
-    lv_label_set_text(s_camera_status, "");
-    if (previous.slot >= 0)
-        camera_service_release_frame(&previous);
+    if (lv_label_get_text(s_camera_status)[0] != '\0')
+        lv_label_set_text(s_camera_status, "");
+    lv_timer_ready(refresh);
     camera_ui_timing_record(&s_ui_diag.frame_update, update_begin);
 }
 
+typedef struct
+{
+    lv_area_t area;
+    int valid;
+} camera_ui_damage_t;
+
+static camera_ui_damage_t s_display_damage[2];
+static void (*s_lcd_rounder)(lv_disp_drv_t *, lv_area_t *);
+static void (*s_lcd_render_start)(lv_disp_drv_t *);
 static void (*s_lcd_flush)(lv_disp_drv_t *, const lv_area_t *, lv_color_t *);
 static void (*s_lcd_wait)(lv_disp_drv_t *);
+
+static void camera_ui_damage_add(camera_ui_damage_t *damage, const lv_area_t *area)
+{
+    if (damage->valid)
+        _lv_area_join(&damage->area, &damage->area, area);
+    else
+    {
+        damage->area = *area;
+        damage->valid = 1;
+    }
+}
+
+static void camera_ui_round_area(lv_disp_drv_t *driver, lv_area_t *area)
+{
+    if (s_lcd_rounder != NULL)
+        s_lcd_rounder(driver, area);
+
+    /* Keep aligned damage before the SDK's RAMLESS area merger replaces
+     * the LVGL invalid-area list with the full screen. Each physical LCD
+     * buffer redraws these regions on its next use as the back buffer. */
+    camera_ui_damage_add(&s_display_damage[0], area);
+    camera_ui_damage_add(&s_display_damage[1], area);
+}
+
+static void camera_ui_render_start(lv_disp_drv_t *driver)
+{
+    lv_disp_t *display = _lv_refr_get_disp_refreshing();
+    lv_disp_draw_buf_t *buffers = driver->draw_buf;
+    unsigned buffer = buffers->buf_act == buffers->buf1 ? 0U : 1U;
+    int last_area = -1;
+    unsigned index;
+
+    if (s_lcd_render_start != NULL)
+        s_lcd_render_start(driver);
+    RT_ASSERT(display != NULL && display->driver == driver);
+    RT_ASSERT(buffers->buf_act == buffers->buf1 || buffers->buf_act == buffers->buf2);
+
+    /* Use the saved damage, not the SDK-expanded invalid areas. */
+    for (index = 0U; index < display->inv_p; ++index)
+    {
+        if (!display->inv_area_joined[index])
+            last_area = (int)index;
+    }
+    RT_ASSERT(last_area >= 0);
+    RT_ASSERT(s_display_damage[buffer].valid);
+    if (s_view != CAMERA_VIEW_HOME)
+    {
+        lv_area_t screen = {0, 0, CAMERA_UI_WIDTH - 1, CAMERA_UI_HEIGHT - 1};
+
+        camera_ui_damage_add(&s_display_damage[0], &screen);
+        camera_ui_damage_add(&s_display_damage[1], &screen);
+    }
+
+    /* LVGL 8 computes the final area's index before render_start_cb. Keep
+     * that index so one direct-mode flush completes and swaps the buffer. */
+    for (index = 0U; index < display->inv_p; ++index)
+        display->inv_area_joined[index] = 1;
+    display->inv_area_joined[last_area] = 0;
+    display->inv_areas[last_area] = s_display_damage[buffer].area;
+    if (s_ui_diag.active && s_view == CAMERA_VIEW_HOME)
+    {
+        if (s_display_damage[buffer].area.x2 < CAMERA_LIVE_WIDTH)
+            ++s_ui_diag.redraw_video_only;
+        else
+            ++s_ui_diag.redraw_sidebar;
+    }
+}
 
 static void camera_ui_flush(lv_disp_drv_t *display, const lv_area_t *area,
                             lv_color_t *pixels)
 {
     const lv_area_t *previous_clip = display->draw_ctx->clip_area;
     rt_tick_t flush_begin = rt_tick_get();
+    int live = s_view == CAMERA_VIEW_HOME && s_live_frame.slot >= 0;
+    uint32_t live_sequence = s_live_frame.sequence;
+    unsigned buffer = pixels == display->draw_buf->buf1 ? 0U : 1U;
 
+    RT_ASSERT(lv_disp_flush_is_last(display));
+    RT_ASSERT(pixels == display->draw_buf->buf1 || pixels == display->draw_buf->buf2);
+    /* Rendering has completed even when a stale camera source prevents this
+     * buffer from being presented. Its static regions are already current. */
+    s_display_damage[buffer].valid = 0;
+
+    /* LVGL has waited for all GPU reads before invoking flush_cb. The LCD
+     * scans the rendered display buffer, so the DCMI source is now free. */
+    if (live)
+    {
+        int valid = camera_service_frame_is_valid(&s_live_frame);
+
+        camera_service_release_frame(&s_live_frame);
+        lv_timer_pause(_lv_disp_get_refr_timer(NULL));
+        if (!valid)
+        {
+            lv_disp_draw_buf_t *buffers = display->draw_buf;
+
+            ++s_ui_diag.source_expired;
+            /* Keep the current LCD front buffer. LVGL toggles buf_act after
+             * flush_cb; cancel that toggle so it renders into the same back
+             * buffer next time instead of writing the LCD's front buffer. */
+            buffers->buf_act = buffers->buf_act == buffers->buf1 ? buffers->buf2 : buffers->buf1;
+            lv_disp_flush_ready(display);
+            return;
+        }
+    }
     /* The SDK LCD adapter reads its window from the draw context. */
     display->draw_ctx->clip_area = display->draw_ctx->buf_area;
     mpu_dcache_clean(pixels, CAMERA_UI_WIDTH * CAMERA_UI_HEIGHT * sizeof(*pixels));
@@ -1024,10 +1145,9 @@ static void camera_ui_flush(lv_disp_drv_t *display, const lv_area_t *area,
     display->draw_ctx->clip_area = previous_clip;
     if (s_capture_pending && s_view == CAMERA_VIEW_HOME && s_capture_prompt_visible)
         s_capture_prompt_flushed = 1;
-    if (s_view == CAMERA_VIEW_HOME && s_live_frame.slot >= 0 &&
-        (!s_has_displayed_sequence || s_displayed_sequence != s_live_frame.sequence))
+    if (live && (!s_has_displayed_sequence || s_displayed_sequence != live_sequence))
     {
-        s_displayed_sequence = s_live_frame.sequence;
+        s_displayed_sequence = live_sequence;
         s_has_displayed_sequence = 1;
         camera_service_record_displayed();
     }
@@ -1049,10 +1169,17 @@ static int camera_ui_configure_display(void)
         driver->flush_cb == NULL || driver->wait_cb == NULL)
         return -RT_ERROR;
 
+    s_lcd_rounder = driver->rounder_cb;
+    s_lcd_render_start = driver->render_start_cb;
     s_lcd_flush = driver->flush_cb;
     s_lcd_wait = driver->wait_cb;
-    driver->direct_mode = 0;
-    driver->full_refresh = 1;
+    lv_area_set(&s_display_damage[0].area, 0, 0, CAMERA_UI_WIDTH - 1, CAMERA_UI_HEIGHT - 1);
+    s_display_damage[0].valid = 1;
+    s_display_damage[1] = s_display_damage[0];
+    driver->direct_mode = 1;
+    driver->full_refresh = 0;
+    driver->rounder_cb = camera_ui_round_area;
+    driver->render_start_cb = camera_ui_render_start;
     driver->flush_cb = camera_ui_flush;
     return RT_EOK;
 }
@@ -1096,6 +1223,7 @@ static void camera_ui_thread(void *parameter)
         rt_tick_t idle_begin;
         rt_uint32_t delay_ms;
 
+        camera_ui_update_live();
         if (!s_ui_diag.active && s_view == CAMERA_VIEW_HOME && s_live_frame.slot >= 0)
         {
             s_ui_diag.begin = rt_tick_get();
@@ -1113,7 +1241,6 @@ static void camera_ui_thread(void *parameter)
             s_refresh_home = 0;
             camera_ui_request_page(0U);
         }
-        camera_ui_update_live();
         camera_service_report_fps();
         camera_ui_diag_report();
         idle_begin = rt_tick_get();

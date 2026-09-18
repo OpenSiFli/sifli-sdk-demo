@@ -8,7 +8,7 @@
     "regions": [
       {
         "offset": "0x00020000",
-        "max_size": "0x00100000",
+        "max_size": "0x00200000",
         "tags": [
           "HCPU_FLASH_CODE"
         ],
@@ -19,7 +19,7 @@
         ]
       },
       {
-        "offset": "0x00120000",
+        "offset": "0x00220000",
         "max_size": "0x00040000",
         "name": "acpu",
         "core": "acpu",
@@ -28,7 +28,7 @@
         ]
       },
       {
-        "offset": "0x00160000",
+        "offset": "0x00260000",
         "max_size": "0x00060000",
         "name": "dfu",
         "type": [
@@ -40,18 +40,25 @@
         ]
       },
       {
-        "offset": "0x001C0000",
+        "offset": "0x002C0000",
         "max_size": "0x00120000",
         "tags": [
           "DFU_DOWNLOAD_REGION"
         ]
       },
       {
-        "offset": "0x002E0000",
-        "max_size": "0x00500000",
+        "offset": "0x003E0000",
+        "max_size": "0x003FF000",
         "name": "fs_root",
         "tags": [
           "FS_REGION"
+        ]
+      },
+      {
+        "offset": "0x007DF000",
+        "max_size": "0x00001000",
+        "tags": [
+          "FS_META_REGION"
         ]
       },
       {

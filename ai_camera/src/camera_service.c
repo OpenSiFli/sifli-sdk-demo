@@ -7,9 +7,7 @@
 #include <rthw.h>
 #include <string.h>
 
-#include "camera_epic.h"
 #include "camera_image.h"
-#include "camera_sw_jpeg_encoder.h"
 #include "camera_sensor.h"
 
 #if defined(SOC_SF32LB57X) && defined(BSP_USING_DCMI)
@@ -23,12 +21,11 @@ extern LCDC_HandleTypeDef *get_drv_lcd_handler(void);
 #endif
 
 #define CAMERA_FRAME_BYTES (CAMERA_LIVE_WIDTH * CAMERA_LIVE_HEIGHT * 2U)
-#define CAMERA_FRAME_SLOTS 3
+#define CAMERA_FRAME_SLOTS 2
 #define CAMERA_THUMB_BYTES (CAMERA_THUMB_WIDTH * CAMERA_THUMB_HEIGHT * 2U)
 #define CAMERA_THUMB_SLOT_BYTES ((CAMERA_THUMB_BYTES + 63U) & ~63U)
 #define CAMERA_THUMB_RET_SLOTS (CAMERA_PAGE_SIZE / 2U)
-#define CAMERA_JPEG_CAPACITY CAMERA_FRAME_BYTES
-#define CAMERA_PHOTO_BYTES (CAMERA_PHOTO_WIDTH * CAMERA_PHOTO_HEIGHT * 2U)
+#define CAMERA_JPEG_CAPACITY (2U * CAMERA_FRAME_BYTES)
 #define CAMERA_PREVIEW_SETTLE_FRAMES 2U
 #define CAMERA_CAPTURE_TIMEOUT_MS 5000U
 #define CAMERA_FPS_WINDOW_MS 5000U
@@ -36,6 +33,7 @@ extern LCDC_HandleTypeDef *get_drv_lcd_handler(void);
 typedef struct
 {
     uint32_t sequence;
+    camera_sensor_frame_t source;
     unsigned int readers;
     int writing;
     int valid;
@@ -50,28 +48,20 @@ typedef struct
     char path[PHOTO_STORE_PATH_MAX];
 } camera_request_t;
 
-/* The stream and still capture own this arena at different times. DMA and
- * independent preview frames keep their original sizes in preview mode. */
+/* Circular preview DMA owns both images. LVGL reads completed generations
+ * directly; still JPEG capture temporarily reuses the entire arena. */
 static union
 {
-    struct
-    {
-        uint8_t dma[2U * CAMERA_FRAME_BYTES];
-        uint8_t frames[2][CAMERA_FRAME_BYTES];
-    } preview;
-    uint8_t photo[CAMERA_PHOTO_BYTES];
+    uint8_t frames[CAMERA_FRAME_SLOTS][CAMERA_FRAME_BYTES];
+    uint8_t photo[CAMERA_JPEG_CAPACITY];
 } s_image_arena L2_RET_BSS_SECT(camera_images) __attribute__((aligned(64)));
 typedef char camera_arena_size_check[
-    sizeof(s_image_arena) == 4U * CAMERA_FRAME_BYTES ? 1 : -1];
-#define s_dma_frame (s_image_arena.preview.dma)
-#define s_frames_ret (s_image_arena.preview.frames)
+    sizeof(s_image_arena) == 2U * CAMERA_FRAME_BYTES ? 1 : -1];
+#define s_dma_frame (s_image_arena.photo)
+static uint32_t s_photo_size;
 static uint8_t s_thumbnails_ret[CAMERA_THUMB_RET_SLOTS][CAMERA_THUMB_SLOT_BYTES]
     L2_RET_BSS_SECT(camera_thumbnails) __attribute__((aligned(64)));
-static uint8_t s_jpeg_work[CAMERA_SW_JPEG_ENCODER_STATIC_WORKSPACE_SIZE]
-    __attribute__((aligned(8)));
 L2_NON_RET_BSS_SECT_BEGIN(frambuf)
-L2_NON_RET_BSS_SECT(frambuf,
-    ALIGN(64) static uint8_t s_frame_extra[CAMERA_FRAME_BYTES]);
 L2_NON_RET_BSS_SECT(frambuf,
     ALIGN(64) static uint8_t s_thumbnails_nonret[CAMERA_PAGE_SIZE - CAMERA_THUMB_RET_SLOTS]
         [CAMERA_THUMB_SLOT_BYTES]);
@@ -79,7 +69,7 @@ L2_NON_RET_BSS_SECT_END
 
 static uint8_t *const s_frames[CAMERA_FRAME_SLOTS] =
 {
-    s_frames_ret[0], s_frames_ret[1], s_frame_extra
+    s_image_arena.frames[0], s_image_arena.frames[1]
 };
 
 static camera_slot_t s_slots[CAMERA_FRAME_SLOTS];
@@ -111,6 +101,7 @@ static int s_photo_slot = -1;
 static uint32_t s_sequence;
 static uint32_t s_delivered_sequence;
 static int s_live;
+static int s_preview_dma_active;
 static int s_camera_status = -RT_ERROR;
 static int s_media_busy;
 static int s_result_ready;
@@ -119,38 +110,12 @@ static int s_settings_ready;
 static uint16_t s_saved_rotation_degrees;
 static uint16_t s_rotation_target_degrees;
 
-typedef enum
-{
-    CAMERA_DROP_NONE = 0,
-    CAMERA_DROP_NO_SLOT,
-    CAMERA_DROP_STALE,
-    CAMERA_DROP_COPY,
-    CAMERA_DROP_LATE,
-    CAMERA_DROP_COUNT
-} camera_drop_t;
-
-typedef struct
-{
-    uint32_t count;
-    uint32_t sum_ms[4];
-    uint32_t max_ms[4];
-} camera_copy_stats_t;
-
-typedef struct
-{
-    uint32_t drops[CAMERA_DROP_COUNT];
-    camera_copy_stats_t copy;
-} camera_delivery_stats_t;
-
-static camera_delivery_stats_t s_delivery;
-
 static struct
 {
     rt_tick_t begin;
     uint32_t received;
     uint32_t published;
     uint32_t displayed;
-    uint32_t queue_dropped_total;
     int streaming;
     int active;
 } s_fps;
@@ -230,8 +195,6 @@ static void camera_fps_reset_locked(void)
     s_fps.received = 0U;
     s_fps.published = 0U;
     s_fps.displayed = 0U;
-    s_fps.queue_dropped_total = 0U;
-    memset(&s_delivery, 0, sizeof(s_delivery));
     s_fps.active = s_live && s_fps.streaming;
 }
 
@@ -243,14 +206,55 @@ static void camera_fps_set_streaming(int enabled)
     rt_mutex_release(s_lock);
 }
 
-static void camera_fps_record_received(uint32_t queue_dropped_total)
+static void camera_preview_update_idle(void)
+{
+    if (camera_sensor_is_quiescent())
+    {
+        rt_mutex_take(s_lock, RT_WAITING_FOREVER);
+        s_preview_dma_active = 0;
+        rt_mutex_release(s_lock);
+    }
+}
+
+static int camera_preview_stop(void)
+{
+    int result = camera_sensor_stop();
+    camera_preview_update_idle();
+    return result;
+}
+
+static int camera_preview_close(void)
+{
+    int result = camera_sensor_close();
+    camera_preview_update_idle();
+    return result;
+}
+
+static int camera_preview_start(void)
+{
+    int index;
+    int result;
+
+    rt_mutex_take(s_lock, RT_WAITING_FOREVER);
+    for (index = 0; index < CAMERA_FRAME_SLOTS; ++index)
+        if (s_slots[index].readers || (!s_photo_memory_owned && s_slots[index].writing))
+        {
+            rt_mutex_release(s_lock);
+            return -RT_EBUSY;
+        }
+    s_preview_dma_active = 1;
+    rt_mutex_release(s_lock);
+    result = camera_sensor_start(s_dma_frame, sizeof(s_dma_frame));
+    if (result != RT_EOK)
+        camera_preview_update_idle();
+    return result;
+}
+
+static void camera_fps_record_received(void)
 {
     rt_mutex_take(s_lock, RT_WAITING_FOREVER);
     if (s_fps.active)
-    {
         ++s_fps.received;
-        s_fps.queue_dropped_total = queue_dropped_total;
-    }
     rt_mutex_release(s_lock);
 }
 
@@ -260,68 +264,16 @@ static uint32_t camera_elapsed_ms(rt_tick_t begin)
                       RT_TICK_PER_SECOND);
 }
 
-/* Copy metrics cover attempted frames; each rejected frame has one reason.
- * Record after the source-validity check so the stats lock cannot delay it. */
-static void camera_record_copy(uint32_t age_ms,
-                               const camera_epic_timing_t *timing)
+static void camera_publish_live_frame(const camera_sensor_frame_t *frame)
 {
-    const uint32_t values[4] =
-    {
-        age_ms, timing->total_ms, timing->submit_ms, timing->resume_ms
-    };
-    unsigned int index;
+    int slot = frame->capture.buffer == s_frames[0] ? 0 : 1;
 
     rt_mutex_take(s_lock, RT_WAITING_FOREVER);
-    if (s_fps.active)
+    if (s_live && s_preview_dma_active && s_capture_stage == CAMERA_CAPTURE_IDLE &&
+        !s_photo_memory_owned && s_slots[slot].readers == 0U &&
+        camera_sensor_frame_is_valid(frame))
     {
-        camera_copy_stats_t *stats = &s_delivery.copy;
-        ++stats->count;
-        for (index = 0U; index < 4U; ++index)
-        {
-            stats->sum_ms[index] += values[index];
-            if (values[index] > stats->max_ms[index])
-                stats->max_ms[index] = values[index];
-        }
-    }
-    rt_mutex_release(s_lock);
-}
-
-static void camera_record_drop(camera_drop_t reason)
-{
-    rt_mutex_take(s_lock, RT_WAITING_FOREVER);
-    if (s_fps.active && reason > CAMERA_DROP_NONE && reason < CAMERA_DROP_COUNT)
-        ++s_delivery.drops[reason];
-    rt_mutex_release(s_lock);
-}
-
-static int camera_reserve_live_frame(void)
-{
-    int slot = -1;
-    int index;
-
-    rt_mutex_take(s_lock, RT_WAITING_FOREVER);
-    for (index = 0; index < CAMERA_FRAME_SLOTS; ++index)
-    {
-        if (index != s_latest && s_slots[index].readers == 0U &&
-            !s_slots[index].writing)
-        {
-            slot = index;
-            s_slots[index].writing = 1;
-            s_slots[index].valid = 0;
-            break;
-        }
-    }
-    rt_mutex_release(s_lock);
-    return slot;
-}
-
-static void camera_finish_live_frame(int slot, int publish)
-{
-    if (slot < 0)
-        return;
-    rt_mutex_take(s_lock, RT_WAITING_FOREVER);
-    if (publish && s_capture_stage == CAMERA_CAPTURE_IDLE && !s_photo_memory_owned)
-    {
+        s_slots[slot].source = *frame;
         s_slots[slot].sequence = ++s_sequence;
         if (s_fps.active)
             ++s_fps.published;
@@ -329,7 +281,6 @@ static void camera_finish_live_frame(int slot, int publish)
         s_latest = slot;
         s_camera_status = 0;
     }
-    s_slots[slot].writing = 0;
     rt_mutex_release(s_lock);
 }
 
@@ -338,6 +289,8 @@ static int camera_photo_reserve_memory(void)
 {
     int index;
 
+    if (s_preview_dma_active)
+        return -RT_EBUSY;
     for (index = 0; index < CAMERA_FRAME_SLOTS; ++index)
         if (s_slots[index].readers != 0U || s_slots[index].writing)
             return -RT_EBUSY;
@@ -352,7 +305,7 @@ static int camera_photo_reserve_memory(void)
     return RT_EOK;
 }
 
-/* Called only after still DMA and encoding have retired, or after a verified
+/* Called only after still DMA and saving have retired, or after a verified
  * switch back to the preview DMA region. */
 static void camera_photo_release_memory(void)
 {
@@ -375,13 +328,13 @@ static void camera_photo_release_memory(void)
 
 static int camera_photo_prepare(int *opened, int *streaming, int *close_pending)
 {
-    int status = camera_sensor_stop();
+    int status = camera_preview_stop();
 
     s_photo_preview_prepared = 0;
     camera_fps_set_streaming(0);
     if (status != RT_EOK || !camera_sensor_is_quiescent())
     {
-        *close_pending = camera_sensor_close() != RT_EOK;
+        *close_pending = camera_preview_close() != RT_EOK;
         *opened = 0;
         *streaming = 0;
         return status != RT_EOK ? status : -RT_EIO;
@@ -402,14 +355,14 @@ static int camera_photo_prepare(int *opened, int *streaming, int *close_pending)
         status = camera_sensor_configure_photo();
     if (status == RT_EOK)
         status = camera_sensor_capture_photo(s_image_arena.photo,
-                        sizeof(s_image_arena.photo), CAMERA_CAPTURE_TIMEOUT_MS);
+                        sizeof(s_image_arena.photo), CAMERA_CAPTURE_TIMEOUT_MS, &s_photo_size);
     if (status == RT_EOK && !camera_sensor_is_quiescent())
         status = -RT_EIO;
     return status;
 }
 
-/* Only sensor registers change here. The captured pixels and JPEG output stay
- * reserved while the media thread encodes and saves the photo. */
+/* Only sensor registers change here. The captured JPEG bytes stay
+ * reserved while the media thread saves the photo. */
 static int camera_photo_prepare_preview(int opened, int close_pending)
 {
     int status;
@@ -437,7 +390,7 @@ static int camera_photo_restore(int *opened, int *streaming, int *close_pending)
     *streaming = 0;
     if (status != RT_EOK)
     {
-        status = camera_sensor_close();
+        status = camera_preview_close();
         *opened = 0;
         if (status == RT_EOK)
         {
@@ -450,9 +403,16 @@ static int camera_photo_restore(int *opened, int *streaming, int *close_pending)
     rt_mutex_take(s_lock, RT_WAITING_FOREVER);
     enabled = s_live;
     rt_mutex_release(s_lock);
+    if (status == RT_EOK)
+    {
+        rt_mutex_take(s_lock, RT_WAITING_FOREVER);
+        if (!s_photo_memory_owned)
+            status = camera_photo_reserve_memory();
+        rt_mutex_release(s_lock);
+    }
     if (status == RT_EOK && enabled)
     {
-        status = camera_sensor_start(s_dma_frame, sizeof(s_dma_frame));
+        status = camera_preview_start();
         *streaming = status == RT_EOK;
         for (index = 0U; status == RT_EOK && index < CAMERA_PREVIEW_SETTLE_FRAMES; ++index)
         {
@@ -465,7 +425,7 @@ static int camera_photo_restore(int *opened, int *streaming, int *close_pending)
     }
     if (status != RT_EOK)
     {
-        int stop_status = camera_sensor_close();
+        int stop_status = camera_preview_close();
 
         *close_pending = stop_status != RT_EOK;
         *opened = 0;
@@ -493,7 +453,7 @@ static int camera_preview_rotate(int *opened, int *streaming, int *close_pending
     rt_mutex_release(s_lock);
     camera_fps_set_streaming(0);
     s_photo_preview_prepared = 0;
-    status = camera_sensor_stop();
+    status = camera_preview_stop();
     /* Cache the saved target even after a failed stop, so recovery reopens
      * with the persisted direction. Busy capture never writes registers. */
     rotation_status = camera_sensor_set_rotation(degrees);
@@ -502,8 +462,8 @@ static int camera_preview_rotate(int *opened, int *streaming, int *close_pending
 }
 
 /* The capture thread alone configures or starts the sensor. PREPARE_PREVIEW
- * can overlap encoding, but RESTORE starts DMA and releases the still pixels
- * only after encoding and saving have retired. */
+ * can overlap saving, but RESTORE starts DMA and releases the still JPEG
+ * only after saving has retired. */
 static int camera_stream_photo_command(int *opened, int *streaming, int *close_pending)
 {
     camera_photo_command_t command;
@@ -557,7 +517,6 @@ static void camera_stream_worker(void *parameter)
     int opened = 0;
     int streaming = 0;
     int close_pending = 0;
-    int slot = -1;
     int startup_status;
     uint16_t startup_rotation;
 
@@ -575,17 +534,14 @@ static void camera_stream_worker(void *parameter)
         rt_thread_mdelay(1);
     }
     (void)camera_sensor_set_rotation(startup_rotation);
-    /* Prewarm the sensor alongside LCD initialization. DCMI and EPIC still
-     * wait for the UI's first flush and its set_live request below. */
+    /* Prewarm the sensor alongside LCD initialization. DCMI still
+     * waits for the UI's first flush and its set_live request below. */
     startup_status = camera_sensor_open();
     opened = startup_status == RT_EOK;
     close_pending = startup_status != RT_EOK && !camera_sensor_is_quiescent();
     for (;;)
     {
         camera_sensor_frame_t frame;
-        camera_epic_timing_t timing;
-        uint32_t age_ms;
-        int valid;
         int enabled;
         int status;
 
@@ -596,7 +552,7 @@ static void camera_stream_worker(void *parameter)
         }
         if (close_pending)
         {
-            if (camera_sensor_close() != RT_EOK)
+            if (camera_preview_close() != RT_EOK)
             {
                 rt_thread_mdelay(500);
                 continue;
@@ -612,12 +568,10 @@ static void camera_stream_worker(void *parameter)
         rt_mutex_release(s_lock);
         if (!enabled)
         {
-            camera_finish_live_frame(slot, 0);
-            slot = -1;
             if (streaming)
             {
                 camera_fps_set_streaming(0);
-                status = camera_sensor_stop();
+                status = camera_preview_stop();
                 if (status == RT_EOK)
                     streaming = 0;
                 else
@@ -641,10 +595,10 @@ static void camera_stream_worker(void *parameter)
         }
         if (status == RT_EOK && !streaming)
         {
-            status = camera_sensor_start(s_dma_frame, sizeof(s_dma_frame));
+            status = camera_preview_start();
             streaming = status == RT_EOK;
             if (streaming)
-                rt_kprintf("camera.stream: mode=frame buffers=2 frame_bytes=%lu\n",
+                rt_kprintf("camera.stream: mode=continuous_direct buffers=2 frame_bytes=%lu\n",
                            (unsigned long)CAMERA_FRAME_BYTES);
 #if defined(SOC_SF32LB57X) && defined(BSP_USING_DCMI)
             if (streaming)
@@ -656,13 +610,11 @@ static void camera_stream_worker(void *parameter)
             status = camera_sensor_wait(&frame, CAMERA_CAPTURE_TIMEOUT_MS);
         if (status != RT_EOK)
         {
-            camera_finish_live_frame(slot, 0);
-            slot = -1;
             rt_mutex_take(s_lock, RT_WAITING_FOREVER);
             s_camera_status = status;
             rt_mutex_release(s_lock);
             camera_fps_set_streaming(0);
-            close_pending = camera_sensor_close() != RT_EOK;
+            close_pending = camera_preview_close() != RT_EOK;
             opened = 0;
             streaming = 0;
             rt_kprintf("camera: stream failed %d, retrying\n", status);
@@ -670,29 +622,8 @@ static void camera_stream_worker(void *parameter)
             continue;
         }
 
-        /* HT and TC each deliver one complete image from the two-frame ring. */
-        camera_fps_record_received(frame.queue_dropped_total);
-        if (!camera_sensor_frame_is_valid(&frame))
-        {
-            camera_record_drop(CAMERA_DROP_STALE);
-            continue;
-        }
-        slot = camera_reserve_live_frame();
-        if (slot < 0)
-        {
-            camera_record_drop(CAMERA_DROP_NO_SLOT);
-            continue;
-        }
-        age_ms = camera_elapsed_ms(frame.capture.timestamp_ticks);
-        status = camera_epic_render_frame(s_frames[slot], frame.capture.buffer,
-                                           CAMERA_LIVE_WIDTH, CAMERA_LIVE_HEIGHT,
-                                           &timing);
-        valid = status == RT_EOK && camera_sensor_frame_is_valid(&frame);
-        camera_record_copy(age_ms, &timing);
-        camera_finish_live_frame(slot, valid);
-        if (!valid)
-            camera_record_drop(status != RT_EOK ? CAMERA_DROP_COPY : CAMERA_DROP_LATE);
-        slot = -1;
+        camera_fps_record_received();
+        camera_publish_live_frame(&frame);
     }
 }
 
@@ -713,7 +644,8 @@ static int camera_reserve_work_frame(void)
         int index;
 
         rt_mutex_take(s_lock, RT_WAITING_FOREVER);
-        for (index = 0; index < CAMERA_FRAME_SLOTS; ++index)
+        for (index = 0; !s_preview_dma_active && !s_live &&
+             !s_photo_memory_owned && index < CAMERA_FRAME_SLOTS; ++index)
         {
             if (index != s_latest && s_slots[index].readers == 0U &&
                 !s_slots[index].writing)
@@ -722,7 +654,8 @@ static int camera_reserve_work_frame(void)
                 break;
             }
         }
-        if (slot < 0 && s_latest >= 0 &&
+        if (!s_preview_dma_active && !s_live && !s_photo_memory_owned &&
+            slot < 0 && s_latest >= 0 &&
             s_slots[s_latest].readers == 0U && !s_slots[s_latest].writing)
             slot = s_latest;
         if (slot >= 0)
@@ -741,13 +674,6 @@ static int camera_reserve_work_frame(void)
     }
 }
 
-static void camera_release_work_frame(int slot)
-{
-    rt_mutex_take(s_lock, RT_WAITING_FOREVER);
-    s_slots[slot].writing = 0;
-    rt_mutex_release(s_lock);
-}
-
 typedef struct
 {
     uint16_t width;
@@ -761,40 +687,18 @@ static int camera_load_jpeg(const char *path, uint8_t *pixels,
                             uint32_t capacity, uint16_t target_width,
                             uint16_t target_height, camera_decoded_info_t *info)
 {
-    size_t size = 0U;
-    int work_slot = camera_reserve_work_frame();
     int status;
-    uint8_t scale;
 
     memset(info, 0, sizeof(*info));
-    if (work_slot < 0)
-        return work_slot;
-    status = photo_store_read_jpeg(path, s_frames[work_slot],
-                                   CAMERA_JPEG_CAPACITY, &size);
-    if (status == RT_EOK)
-        status = camera_image_probe_jpeg(s_frames[work_slot], size,
-                                         &info->source_width, &info->source_height);
+    status = camera_image_decode_file(path, pixels, capacity, target_width,
+                target_height, &info->source_width, &info->source_height,
+                &info->file_size);
     if (status == RT_EOK)
     {
-        for (scale = 0U; scale <= 3U; ++scale)
-            if ((info->source_width >> scale) == target_width &&
-                (info->source_height >> scale) == target_height)
-                break;
-        if (scale > 3U)
-            status = -RT_EINVAL;
-        else
-            status = camera_image_decode_jpeg(s_frames[work_slot], size, pixels,
-                        capacity, scale, &info->width, &info->height);
+        info->width = target_width;
+        info->height = target_height;
+        mpu_dcache_clean(pixels, (uint32_t)target_width * target_height * 2U);
     }
-    if (status == RT_EOK &&
-        (info->width != target_width || info->height != target_height))
-        status = -RT_EINVAL;
-    if (status == RT_EOK)
-    {
-        info->file_size = (uint32_t)size;
-        mpu_dcache_clean(pixels, (uint32_t)info->width * info->height * 2U);
-    }
-    camera_release_work_frame(work_slot);
     return status;
 }
 
@@ -840,53 +744,20 @@ static int camera_load_photo_at(uint32_t offset, camera_media_result_t *result)
 
 static int camera_save_photo(camera_media_result_t *result)
 {
-    static const camera_sw_jpeg_quality_t qualities[] =
-    {
-        CAMERA_SW_JPEG_QUALITY_HIGH, CAMERA_SW_JPEG_QUALITY_MEDIUM,
-        CAMERA_SW_JPEG_QUALITY_LOW,
-    };
-    camera_sw_jpeg_encoder_t encoder;
-    camera_sw_jpeg_frame_t frame;
-    uint32_t size = 0U;
     uint16_t width = 0U;
     uint16_t height = 0U;
-    unsigned int attempt;
-    int status = -RT_ERROR;
+    uint32_t size = s_photo_size;
+    int status;
     rt_tick_t begin;
 
+    if (size == 0U || size > CAMERA_JPEG_CAPACITY ||
+        camera_image_probe_jpeg(s_image_arena.photo, size, &width, &height) != RT_EOK ||
+        width != CAMERA_PHOTO_WIDTH || height != CAMERA_PHOTO_HEIGHT)
+        return -RT_EIO;
     begin = rt_tick_get();
-
-    frame.data = s_image_arena.photo;
-    frame.width = CAMERA_PHOTO_WIDTH;
-    frame.height = CAMERA_PHOTO_HEIGHT;
-    frame.stride = CAMERA_PHOTO_WIDTH * 2U;
-    frame.pixel_format = CAMERA_SW_JPEG_PIXEL_RGB565;
-    for (attempt = 0U; attempt < sizeof(qualities) / sizeof(qualities[0]); ++attempt)
-    {
-        status = camera_sw_jpeg_encoder_init(&encoder, s_jpeg_work, sizeof(s_jpeg_work));
-        if (status != RT_EOK)
-            break;
-        status = camera_sw_jpeg_encode_to_buffer(&encoder, &frame, qualities[attempt],
-                    s_frame_extra, CAMERA_JPEG_CAPACITY, &size);
-        if (status == RT_EOK)
-            break;
-    }
-    rt_kprintf("camera.photo: encode status=%d elapsed_ms=%lu bytes=%lu quality=%u\n",
-               status, (unsigned long)camera_elapsed_ms(begin), (unsigned long)size,
-               (unsigned int)(attempt < sizeof(qualities) / sizeof(qualities[0])
-                                  ? qualities[attempt] : CAMERA_SW_JPEG_QUALITY_LOW));
-    if (status == RT_EOK &&
-        (size == 0U || size > CAMERA_JPEG_CAPACITY ||
-         camera_image_probe_jpeg(s_frame_extra, size, &width, &height) != RT_EOK ||
-         width != CAMERA_PHOTO_WIDTH || height != CAMERA_PHOTO_HEIGHT))
-        status = -RT_EIO;
-    if (status == RT_EOK)
-    {
-        begin = rt_tick_get();
-        status = photo_store_save_jpeg(s_frame_extra, size, &result->items[0]);
-        rt_kprintf("camera.photo: save status=%d elapsed_ms=%lu bytes=%lu\n",
-                   status, (unsigned long)camera_elapsed_ms(begin), (unsigned long)size);
-    }
+    status = photo_store_save_jpeg(s_image_arena.photo, size, &result->items[0]);
+    rt_kprintf("camera.photo: save source=sensor_jpeg status=%d elapsed_ms=%lu bytes=%lu\n",
+               status, (unsigned long)camera_elapsed_ms(begin), (unsigned long)size);
     if (status == RT_EOK)
     {
         result->source_width = width;
@@ -916,7 +787,7 @@ static void camera_media_capture(camera_media_result_t *result)
         s_photo_command = CAMERA_PHOTO_COMMAND_PREPARE_PREVIEW;
         rt_mutex_release(s_lock);
         result->status = camera_save_photo(result);
-        /* Retire the configuration command even if encoding or saving fails.
+        /* Retire the configuration command even if saving fails.
          * A failed preconfiguration is retried by the normal restore path. */
         rt_sem_take(s_photo_sem, RT_WAITING_FOREVER);
     }
@@ -1123,14 +994,10 @@ void camera_service_report_fps(void)
     uint32_t received;
     uint32_t published;
     uint32_t displayed;
-    uint32_t queue_dropped_total;
     uint32_t received_x10;
     uint32_t published_x10;
     uint32_t displayed_x10;
     uint32_t window_ms;
-    camera_delivery_stats_t delivery;
-    const camera_copy_stats_t *stats;
-    uint32_t divisor;
 
     if (!s_started)
         return;
@@ -1145,9 +1012,6 @@ void camera_service_report_fps(void)
     received = s_fps.received;
     published = s_fps.published;
     displayed = s_fps.displayed;
-    queue_dropped_total = s_fps.queue_dropped_total;
-    delivery = s_delivery;
-    memset(&s_delivery, 0, sizeof(s_delivery));
     s_fps.begin = now;
     s_fps.received = 0U;
     s_fps.published = 0U;
@@ -1165,21 +1029,6 @@ void camera_service_report_fps(void)
                (unsigned long)(displayed_x10 / 10U), (unsigned long)(displayed_x10 % 10U),
                (unsigned long)received, (unsigned long)published, (unsigned long)displayed,
                (unsigned long)window_ms);
-    rt_kprintf("camera.drop: no_slot=%lu stale=%lu copy=%lu late=%lu queue_total=%lu\n",
-               (unsigned long)delivery.drops[CAMERA_DROP_NO_SLOT],
-               (unsigned long)delivery.drops[CAMERA_DROP_STALE],
-               (unsigned long)delivery.drops[CAMERA_DROP_COPY],
-               (unsigned long)delivery.drops[CAMERA_DROP_LATE],
-               (unsigned long)queue_dropped_total);
-    stats = &delivery.copy;
-    divisor = stats->count != 0U ? stats->count : 1U;
-    rt_kprintf("camera.copy: engine=epic scope=frame n=%lu avg/max_ms age=%lu/%lu "
-               "total=%lu/%lu submit=%lu/%lu resume=%lu/%lu\n",
-               (unsigned long)stats->count,
-               (unsigned long)(stats->sum_ms[0] / divisor), (unsigned long)stats->max_ms[0],
-               (unsigned long)(stats->sum_ms[1] / divisor), (unsigned long)stats->max_ms[1],
-               (unsigned long)(stats->sum_ms[2] / divisor), (unsigned long)stats->max_ms[2],
-               (unsigned long)(stats->sum_ms[3] / divisor), (unsigned long)stats->max_ms[3]);
 }
 
 int camera_service_take_frame(camera_live_frame_t *frame)
@@ -1189,10 +1038,11 @@ int camera_service_take_frame(camera_live_frame_t *frame)
     if (!s_started || frame == RT_NULL)
         return -RT_EINVAL;
     rt_mutex_take(s_lock, RT_WAITING_FOREVER);
-    if (s_capture_stage == CAMERA_CAPTURE_IDLE && !s_photo_memory_owned &&
-        s_latest >= 0 && s_slots[s_latest].valid &&
+    if (s_live && s_preview_dma_active && s_capture_stage == CAMERA_CAPTURE_IDLE &&
+        !s_photo_memory_owned && s_latest >= 0 && s_slots[s_latest].valid &&
         !s_slots[s_latest].writing &&
-        s_slots[s_latest].sequence != s_delivered_sequence)
+        s_slots[s_latest].sequence != s_delivered_sequence &&
+        camera_sensor_prepare_frame(&s_slots[s_latest].source))
     {
         frame->slot = s_latest;
         frame->pixels = s_frames[s_latest];
@@ -1204,6 +1054,21 @@ int camera_service_take_frame(camera_live_frame_t *frame)
     }
     rt_mutex_release(s_lock);
     return result;
+}
+
+int camera_service_frame_is_valid(const camera_live_frame_t *frame)
+{
+    int valid = 0;
+
+    if (!s_started || frame == RT_NULL || frame->slot < 0 || frame->slot >= CAMERA_FRAME_SLOTS)
+        return 0;
+    rt_mutex_take(s_lock, RT_WAITING_FOREVER);
+    if (s_preview_dma_active && s_slots[frame->slot].readers != 0U &&
+        s_slots[frame->slot].sequence == frame->sequence &&
+        frame->pixels == s_frames[frame->slot])
+        valid = camera_sensor_frame_is_valid(&s_slots[frame->slot].source);
+    rt_mutex_release(s_lock);
+    return valid;
 }
 
 void camera_service_release_frame(camera_live_frame_t *frame)
@@ -1243,7 +1108,7 @@ static int camera_submit(camera_request_t *request)
         s_slots[s_photo_slot].readers--;
         s_photo_slot = -1;
     }
-    if (request->kind == CAMERA_MEDIA_CAPTURE)
+    if (request->kind == CAMERA_MEDIA_CAPTURE || request->kind == CAMERA_MEDIA_ROTATE)
     {
         int index;
 
@@ -1253,17 +1118,12 @@ static int camera_submit(camera_request_t *request)
                 rt_mutex_release(s_lock);
                 return -RT_EBUSY;
             }
-        s_capture_stage = CAMERA_CAPTURE_CAPTURING;
+        s_capture_stage = request->kind == CAMERA_MEDIA_CAPTURE ?
+                          CAMERA_CAPTURE_CAPTURING : CAMERA_CAPTURE_RESTORING;
         s_latest = -1;
         s_displayed = -1;
         for (index = 0; index < CAMERA_FRAME_SLOTS; ++index)
             s_slots[index].valid = 0;
-        camera_fps_reset_locked();
-    }
-    if (request->kind == CAMERA_MEDIA_ROTATE)
-    {
-        s_capture_stage = CAMERA_CAPTURE_RESTORING;
-        s_latest = -1;
         camera_fps_reset_locked();
     }
     s_request = *request;

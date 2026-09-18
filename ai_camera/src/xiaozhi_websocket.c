@@ -189,12 +189,8 @@ static int ai_xiaozhi_connect_request(void)
         return -1;
     }
     if (activation.activation_pending)
-    {
-        rt_kprintf("xiaozhi: bind device with code %s\n",
+        rt_kprintf("xiaozhi: unbound device, bind code %s\n",
                    activation.activation_code);
-        ai_xiaozhi_notify(AI_XIAOZHI_EVENT_ERROR);
-        return -1;
-    }
     if (ai_xiaozhi_get_identity(device_id, sizeof(device_id), client_id,
                                 sizeof(client_id)) < 0)
     {

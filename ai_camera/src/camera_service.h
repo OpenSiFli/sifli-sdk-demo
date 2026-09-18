@@ -64,9 +64,11 @@ void camera_service_set_live(int enabled);
  * report the received/published/displayed rates from the regular UI loop. */
 void camera_service_record_displayed(void);
 void camera_service_report_fps(void);
-/* Successful take adds a reference. Release only after LVGL/EPIC has finished
- * reading the old image. The caller must not write into a live frame. */
+/* Successful take borrows a completed DMA frame and excludes media reuse.
+ * Circular DMA keeps running: validate after LVGL/EPIC reads finish, then
+ * release the reference. The caller must not write into a live frame. */
 int camera_service_take_frame(camera_live_frame_t *frame);
+int camera_service_frame_is_valid(const camera_live_frame_t *frame);
 void camera_service_release_frame(camera_live_frame_t *frame);
 /* Media calls are nonblocking; only one request/result may be outstanding.
  * Page/full-photo buffers may be reused by the next media request. Hide the

@@ -7,7 +7,6 @@
 
 #define CAMERA_SENSOR_PHOTO_WIDTH 1600U
 #define CAMERA_SENSOR_PHOTO_HEIGHT 1200U
-#define CAMERA_SENSOR_PHOTO_SIZE (CAMERA_SENSOR_PHOTO_WIDTH * CAMERA_SENSOR_PHOTO_HEIGHT * 2U)
 
 typedef struct
 {
@@ -16,11 +15,11 @@ typedef struct
     uint32_t queue_dropped_total;
 } camera_sensor_frame_t;
 
-/* All sensor functions are called by the stream thread only. */
+/* Sensor lifecycle and configuration run on the stream thread. */
 int camera_sensor_open(void);
 int camera_sensor_close(void);
 /* buffer holds two contiguous, 64-byte-aligned RGB565 images, and size is
- * their total byte capacity. Each FRAME notification names one whole image. */
+ * their total byte capacity. DCMI continuously alternates between the two images. */
 int camera_sensor_start(uint8_t *buffer, uint32_t size);
 int camera_sensor_stop(void);
 /* True only after DMA and completion callbacks have released their buffers.
@@ -31,15 +30,21 @@ int camera_sensor_configure_photo(void);
 /* Select 0/180 degrees, including before open. When capture is active, cache
  * the target for recovery and return busy without touching sensor registers. */
 int camera_sensor_set_rotation(uint16_t degrees);
-/* Capture eleven complete UXGA images into one 64-byte-aligned buffer. Discard
- * the first ten frames and retain the eleventh, without an extra timed wait.
+/* Start continuous reception once for ten complete UXGA JPEG images. Discard
+ * the first nine frames and retain the tenth at the start of the 64-byte-aligned
+ * buffer. capacity covers the whole receive sequence, without an extra timed wait.
  * timeout_ms covers the capture sequence; stopping may take a further 200 ms.
- * Check is_quiescent after failure. */
-int camera_sensor_capture_photo(uint8_t *buffer, uint32_t capacity, uint32_t timeout_ms);
+ * jpeg_size returns only the final JPEG length. Check is_quiescent after failure. */
+int camera_sensor_capture_photo(uint8_t *buffer, uint32_t capacity, uint32_t timeout_ms,
+                                uint32_t *jpeg_size);
 /* Reapply the original SVGA profile; the caller discards resumed preview frames. */
 int camera_sensor_restore_preview(void);
+/* Dequeue one completed-frame event without stopping continuous capture. */
 int camera_sensor_wait(camera_sensor_frame_t *frame, uint32_t timeout_ms);
-/* A complete frame remains readable until DMA starts reusing its buffer. */
+/* These queries use the static bus backend and may run on the UI thread. */
 int camera_sensor_frame_is_valid(const camera_sensor_frame_t *frame);
+/* Invalidate the CPU cache for a completed DMA frame. This does not stop DMA
+ * or prevent reuse; validate the generation again after GPU reads finish. */
+int camera_sensor_prepare_frame(const camera_sensor_frame_t *frame);
 
 #endif

@@ -33,6 +33,14 @@ int camera_image_decode_jpeg(const uint8_t *jpeg, size_t jpeg_size,
                              uint8_t *pixels, uint32_t capacity, uint8_t scale,
                              uint16_t *width, uint16_t *height);
 
+/* Decode a saved JPEG directly to the requested 1/1, 1/2, 1/4 or 1/8 size.
+ * File size is independent of output capacity; no complete JPEG buffer is
+ * allocated. Shares the same workspace and media-thread serialization. */
+int camera_image_decode_file(const char *path, uint8_t *pixels, uint32_t capacity,
+                             uint16_t target_width, uint16_t target_height,
+                             uint16_t *source_width, uint16_t *source_height,
+                             uint32_t *file_size);
+
 #ifdef __cplusplus
 }
 #endif

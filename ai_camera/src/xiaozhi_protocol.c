@@ -600,7 +600,10 @@ int ai_xiaozhi_build_mcp_initialize_response(
     static const char format[] =
         "{\"session_id\":\"%s\",\"type\":\"mcp\","
         "\"payload\":{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{"
-        "\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},"
+        "\"protocolVersion\":\"2024-11-05\","
+        /* Declaring the tools capability is what makes the server ask for
+         * tools/list; without it the model never learns about the camera. */
+        "\"capabilities\":{\"tools\":{}},"
         "\"serverInfo\":{\"name\":\"ai_camera\","
         "\"version\":\"1.0.0\"}}}}";
     int written;
@@ -610,6 +613,230 @@ int ai_xiaozhi_build_mcp_initialize_response(
         return -1;
     written = snprintf(out, out_size, format, session_id, request_id);
     return written < 0 || (size_t)written >= out_size ? -1 : written;
+}
+
+/* Shared envelope check for the MCP requests the server sends us: type "mcp",
+ * a safe session id, JSON-RPC 2.0, the expected method and an integer id. */
+static int ai_xiaozhi_parse_mcp_request(const char *response, int tools_call,
+                                        char *session_id, size_t session_id_size,
+                                        int *request_id, char *tool_name,
+                                        size_t tool_name_size, char *question,
+                                        size_t question_size)
+{
+    cJSON *root;
+    cJSON *type;
+    cJSON *envelope_session_id;
+    cJSON *payload;
+    cJSON *jsonrpc;
+    cJSON *method;
+    cJSON *id;
+    cJSON *params;
+    uint32_t parsed_id;
+    int result = -1;
+
+    if (response == NULL)
+        return -1;
+    root = cJSON_Parse(response);
+    if (root == NULL)
+        return -1;
+    type = cJSON_GetObjectItemCaseSensitive(root, "type");
+    envelope_session_id = cJSON_GetObjectItemCaseSensitive(root, "session_id");
+    payload = cJSON_GetObjectItemCaseSensitive(root, "payload");
+    jsonrpc = payload == NULL ? NULL :
+              cJSON_GetObjectItemCaseSensitive(payload, "jsonrpc");
+    method = payload == NULL ? NULL :
+             cJSON_GetObjectItemCaseSensitive(payload, "method");
+    id = payload == NULL ? NULL : cJSON_GetObjectItemCaseSensitive(payload, "id");
+    params = payload == NULL ? NULL :
+             cJSON_GetObjectItemCaseSensitive(payload, "params");
+
+    if (!cJSON_IsString(type) || strcmp(type->valuestring, "mcp") != 0 ||
+        !cJSON_IsString(envelope_session_id) ||
+        !ai_xiaozhi_session_id_is_safe(envelope_session_id->valuestring) ||
+        !cJSON_IsObject(payload) || !cJSON_IsString(jsonrpc) ||
+        strcmp(jsonrpc->valuestring, "2.0") != 0 || !cJSON_IsString(method) ||
+        strcmp(method->valuestring,
+               tools_call ? "tools/call" : "tools/list") != 0 ||
+        ai_xiaozhi_json_integer(id, 0U, (uint32_t)INT_MAX, &parsed_id) < 0)
+        goto done;
+    if (session_id != NULL &&
+        ai_xiaozhi_copy_field(session_id, session_id_size,
+                              envelope_session_id->valuestring,
+                              strlen(envelope_session_id->valuestring)) < 0)
+        goto done;
+    if (request_id != NULL)
+        *request_id = (int)parsed_id;
+    if (tools_call)
+    {
+        cJSON *name;
+        cJSON *arguments;
+        cJSON *question_item;
+
+        if (!cJSON_IsObject(params))
+            goto done;
+        name = cJSON_GetObjectItemCaseSensitive(params, "name");
+        arguments = cJSON_GetObjectItemCaseSensitive(params, "arguments");
+        if (!cJSON_IsString(name) ||
+            !ai_xiaozhi_text_is_safe(name->valuestring))
+            goto done;
+        if (tool_name != NULL &&
+            ai_xiaozhi_copy_field(tool_name, tool_name_size, name->valuestring,
+                                  strlen(name->valuestring)) < 0)
+            goto done;
+        if (question != NULL)
+        {
+            question_item = cJSON_IsObject(arguments) ?
+                            cJSON_GetObjectItemCaseSensitive(arguments,
+                                                             "question") :
+                            NULL;
+            /* The model may omit the question: fall back to the default. */
+            if (question_item == NULL)
+                question[0] = '\0';
+            else if (!cJSON_IsString(question_item) ||
+                     !ai_xiaozhi_text_is_safe(question_item->valuestring) ||
+                     ai_xiaozhi_copy_field(question, question_size,
+                                           question_item->valuestring,
+                                           strlen(question_item->valuestring)) <
+                         0)
+                goto done;
+        }
+    }
+    result = 0;
+done:
+    cJSON_Delete(root);
+    return result;
+}
+
+int ai_xiaozhi_parse_mcp_tools_list_request(const char *response,
+                                           char *session_id,
+                                           size_t session_id_size,
+                                           int *request_id)
+{
+    if (session_id == NULL || session_id_size == 0U)
+        return -1;
+    return ai_xiaozhi_parse_mcp_request(response, 0, session_id,
+                                        session_id_size, request_id, NULL, 0U,
+                                        NULL, 0U);
+}
+
+int ai_xiaozhi_parse_mcp_tools_call_request(const char *response,
+                                           char *session_id,
+                                           size_t session_id_size,
+                                           int *request_id, char *tool_name,
+                                           size_t tool_name_size,
+                                           char *question,
+                                           size_t question_size)
+{
+    if (session_id == NULL || session_id_size == 0U || tool_name == NULL ||
+        tool_name_size == 0U || question == NULL || question_size == 0U)
+        return -1;
+    return ai_xiaozhi_parse_mcp_request(response, 1, session_id,
+                                        session_id_size, request_id, tool_name,
+                                        tool_name_size, question,
+                                        question_size);
+}
+
+int ai_xiaozhi_build_mcp_tools_list_response(char *out, size_t out_size,
+                                            const char *session_id,
+                                            int request_id)
+{
+    static const char format[] =
+        "{\"session_id\":\"%s\",\"type\":\"mcp\",\"payload\":{\"jsonrpc\":\"2.0\","
+        "\"id\":%d,\"result\":{\"tools\":[{\"name\":\"self.camera.take_photo\","
+        "\"description\":\"Take a photo with the device camera and return a "
+        "description of what it shows. Call this whenever the user asks about a "
+        "picture or about what the camera can see.\","
+        "\"inputSchema\":{\"type\":\"object\",\"properties\":{\"question\":{"
+        "\"type\":\"string\",\"description\":\"The question to answer about the "
+        "photo\"}},\"required\":[\"question\"]}}]}}}";
+    int written;
+
+    if (out == NULL || out_size == 0U ||
+        !ai_xiaozhi_session_id_is_safe(session_id) || request_id < 0)
+        return -1;
+    written = snprintf(out, out_size, format, session_id, request_id);
+    return written < 0 || (size_t)written >= out_size ? -1 : written;
+}
+
+int ai_xiaozhi_build_mcp_tool_result(char *out, size_t out_size,
+                                     const char *session_id, int request_id,
+                                     const char *text, int is_error)
+{
+    cJSON *root;
+    cJSON *payload;
+    cJSON *result;
+    cJSON *content;
+    cJSON *item;
+    char *printed;
+    size_t length;
+    int status = -1;
+
+    if (out == NULL || out_size == 0U ||
+        !ai_xiaozhi_session_id_is_safe(session_id) || request_id < 0 ||
+        text == NULL)
+        return -1;
+    root = cJSON_CreateObject();
+    payload = cJSON_CreateObject();
+    result = cJSON_CreateObject();
+    content = cJSON_CreateArray();
+    item = cJSON_CreateObject();
+    if (root == NULL || payload == NULL || result == NULL || content == NULL ||
+        item == NULL)
+    {
+        cJSON_Delete(root);
+        cJSON_Delete(payload);
+        cJSON_Delete(result);
+        cJSON_Delete(content);
+        cJSON_Delete(item);
+        return -1;
+    }
+    /* cJSON escapes the text, so quotes and newlines cannot break the frame. */
+    cJSON_AddStringToObject(root, "session_id", session_id);
+    cJSON_AddStringToObject(root, "type", "mcp");
+    cJSON_AddItemToObject(root, "payload", payload);
+    cJSON_AddStringToObject(payload, "jsonrpc", "2.0");
+    cJSON_AddNumberToObject(payload, "id", (double)request_id);
+    cJSON_AddItemToObject(payload, "result", result);
+    cJSON_AddItemToObject(result, "content", content);
+    cJSON_AddStringToObject(item, "type", "text");
+    cJSON_AddStringToObject(item, "text", text);
+    cJSON_AddItemToArray(content, item);
+    cJSON_AddBoolToObject(result, "isError", is_error != 0);
+    printed = cJSON_PrintUnformatted(root);
+    if (printed != NULL)
+    {
+        length = strlen(printed);
+        if (length < out_size)
+        {
+            memcpy(out, printed, length + 1U);
+            status = (int)length;
+        }
+        cJSON_free(printed);
+    }
+    cJSON_Delete(root);
+    return status;
+}
+
+int ai_xiaozhi_parse_vision_explain_response(const char *response, char *text,
+                                             size_t text_size)
+{
+    cJSON *root;
+    cJSON *item;
+    int result = -1;
+
+    if (response == NULL || text == NULL || text_size == 0U)
+        return -1;
+    text[0] = '\0';
+    root = cJSON_Parse(response);
+    if (root == NULL)
+        return -1;
+    item = cJSON_GetObjectItemCaseSensitive(root, "text");
+    if (cJSON_IsString(item) && item->valuestring[0] != '\0' &&
+        ai_xiaozhi_copy_field(text, text_size, item->valuestring,
+                              strlen(item->valuestring)) == 0)
+        result = 0;
+    cJSON_Delete(root);
+    return result;
 }
 
 int ai_xiaozhi_build_multipart_prefix(char *out, size_t out_size,

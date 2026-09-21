@@ -7,11 +7,13 @@
 #include <bf0_hal.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <finsh.h>
 #include <mem_map.h>
 #include <rtdevice.h>
 #include <rthw.h>
 #include <rtthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* FatFs and POSIX both name their directory handle DIR. */
@@ -895,6 +897,92 @@ int photo_store_read_jpeg(const char *path, void *buffer, size_t capacity, size_
     return photo_store_leave(result);
 }
 
+int photo_store_delete_at(uint32_t offset, photo_store_info_t *deleted)
+{
+    photo_store_info_t cursor;
+    photo_store_info_t next;
+    struct stat st;
+    uint32_t index;
+    int result;
+
+    if (deleted != NULL)
+        memset(deleted, 0, sizeof(*deleted));
+    /* Walk to the requested item and unlink it under one lock, so a concurrent
+     * capture cannot insert a photo between the lookup and the removal. */
+    result = photo_store_enter();
+    if (result < 0)
+        return result;
+    result = photo_store_init_locked();
+    if (result < 0)
+        return photo_store_leave(result);
+    memset(&cursor, 0, sizeof(cursor));
+    for (index = 0; index <= offset; ++index)
+    {
+        result = photo_store_scan(index == 0U ? NULL : &cursor, &next, NULL, NULL,
+                                  NULL);
+        if (result < 0)
+            return photo_store_leave(result);
+        if (next.path[0] == '\0')
+            return photo_store_leave(-ENOENT);
+        cursor = next;
+    }
+    if (stat(cursor.path, &st) < 0)
+        return photo_store_leave(photo_store_posix_error("delete_stat"));
+    if (!S_ISREG(st.st_mode))
+        return photo_store_leave(-EINVAL);
+    if (unlink(cursor.path) < 0)
+        return photo_store_leave(photo_store_posix_error("delete_unlink"));
+    if (deleted != NULL)
+        *deleted = cursor;
+    return photo_store_leave(0);
+}
+
+#define PHOTO_DELETE_LIST_MAX 6U
+
+static void photo_delete_command(int argc, char **argv)
+{
+    photo_store_info_t items[PHOTO_DELETE_LIST_MAX];
+    photo_store_info_t deleted;
+    photo_store_status_t status;
+    size_t written = 0;
+    uint32_t total = 0;
+    uint32_t index;
+    int result;
+
+    if (argc == 1)
+    {
+        result = photo_store_list(0U, items, PHOTO_DELETE_LIST_MAX, &written,
+                                  &total);
+        if (result < 0)
+        {
+            rt_kprintf("photo: list failed %d\n", result);
+            return;
+        }
+        rt_kprintf("photo: total=%u list=%u newest first\n",
+                   (unsigned int)total, (unsigned int)written);
+        for (index = 0; index < written; ++index)
+            rt_kprintf("photo: %u %s %u\n", (unsigned int)index,
+                       items[index].path, (unsigned int)items[index].size);
+        return;
+    }
+    if (argc != 2)
+    {
+        rt_kprintf("usage: photo_delete [index]\n");
+        return;
+    }
+    index = (uint32_t)strtoul(argv[1], NULL, 10);
+    result = photo_store_delete_at(index, &deleted);
+    if (result < 0)
+    {
+        rt_kprintf("photo: delete %u failed %d\n", (unsigned int)index, result);
+        return;
+    }
+    rt_kprintf("photo: deleted %s\n", deleted.path);
+    if (photo_store_get_status(&status) == 0)
+        rt_kprintf("photo: %u left\n", (unsigned int)status.photo_count);
+}
+MSH_CMD_EXPORT_ALIAS(photo_delete_command, photo_delete,
+                     Album photo delete by index and album listing);
 
 #define PHOTO_STORE_ROTATION_BYTES 16U
 #define PHOTO_STORE_ROTATION_TEMP PHOTO_STORE_DIRECTORY "/.rotation.tmp"

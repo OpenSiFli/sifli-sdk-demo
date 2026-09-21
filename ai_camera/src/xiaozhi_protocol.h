@@ -15,6 +15,14 @@
 #define AI_XIAOZHI_CLIENT_ID_MAX 37U
 #define AI_XIAOZHI_CONTENT_LENGTH_HEADER_MAX 48U
 #define AI_XIAOZHI_ACTIVATION_REQUEST_MAX 1024U
+#define AI_XIAOZHI_MCP_TOOL_NAME_MAX 64U
+#define AI_XIAOZHI_MCP_QUESTION_MAX 192U
+#define AI_XIAOZHI_MCP_TOOLS_RESPONSE_MAX 768U
+#define AI_XIAOZHI_MCP_TOOL_RESULT_MAX 1024U
+/* The explain answer is JSON ({...,"text":"..."}); a full Chinese sentence
+ * does not fit AI_XIAOZHI_VISION_RESPONSE_MAX. */
+#define AI_XIAOZHI_VISION_TEXT_MAX 512U
+#define AI_XIAOZHI_VISION_EXPLAIN_MAX 768U
 
 typedef struct
 {
@@ -89,6 +97,24 @@ int ai_xiaozhi_parse_mcp_vision_initialize_request(
     char *session_id, size_t session_id_size, int *request_id);
 int ai_xiaozhi_build_mcp_initialize_response(
     char *out, size_t out_size, const char *session_id, int request_id);
+/* MCP tool channel: the server (MCP client) enumerates the device tools with
+ * tools/list and invokes them with tools/call. */
+int ai_xiaozhi_parse_mcp_tools_list_request(
+    const char *response, char *session_id, size_t session_id_size,
+    int *request_id);
+int ai_xiaozhi_parse_mcp_tools_call_request(
+    const char *response, char *session_id, size_t session_id_size,
+    int *request_id, char *tool_name, size_t tool_name_size, char *question,
+    size_t question_size);
+int ai_xiaozhi_build_mcp_tools_list_response(
+    char *out, size_t out_size, const char *session_id, int request_id);
+/* text is JSON escaped; is_error marks the result as a failed call. */
+int ai_xiaozhi_build_mcp_tool_result(char *out, size_t out_size,
+                                     const char *session_id, int request_id,
+                                     const char *text, int is_error);
+/* Pulls the human readable answer out of the vision explain response. */
+int ai_xiaozhi_parse_vision_explain_response(const char *response, char *text,
+                                             size_t text_size);
 int ai_xiaozhi_multipart_length(const char *question, size_t jpeg_size,
                                 const char *boundary);
 int ai_xiaozhi_build_multipart_prefix(char *out, size_t out_size,

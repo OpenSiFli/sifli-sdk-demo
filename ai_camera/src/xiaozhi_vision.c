@@ -8,14 +8,27 @@
 
 #include <string.h>
 
+#include "photo_storage/photo_store.h"
+#include "xiaozhi_websocket.h"
+
 #define AI_XIAOZHI_VISION_HEADER_MAX 1024U
 #define AI_XIAOZHI_VISION_URL_MAX 512U
 #define AI_XIAOZHI_VISION_STREAM_SIZE 2048U
+/* The upload frame alone (header + multipart prefix + stream buffer) is several
+ * kilobytes, and an https endpoint adds a TLS handshake on top, so it must not
+ * run on the 4 KB shell thread. Callers hand the work to this thread instead. */
+#define AI_XIAOZHI_VISION_STACK_SIZE (16U * 1024U)
+#define AI_XIAOZHI_VISION_THREAD_PRIORITY 20U
+#define AI_XIAOZHI_VISION_PATH_MAX 96U
+#define AI_XIAOZHI_VISION_QUESTION_MAX 128U
+#define AI_XIAOZHI_VISION_DEFAULT_QUESTION "请描述这张图片。"
 
 extern int webclient_handle_response(struct webclient_session *session);
 
 static ai_xiaozhi_vision_capability_t s_capability;
 static rt_mutex_t s_capability_lock;
+/* Cleared when the session that handed the capability out ends. */
+static volatile int s_capability_valid;
 
 static int ai_xiaozhi_vision_write(struct webclient_session *session,
                                    const void *data, size_t size)
@@ -49,6 +62,8 @@ static int ai_xiaozhi_vision_response(struct webclient_session *session,
     if (response == RT_NULL || response_size == 0U)
         return remaining == 0 ? 0 : -1;
     response[0] = '\0';
+    if (remaining <= 0)
+        rt_kprintf("vision: content_length %d\n", remaining);
     while (remaining > 0)
     {
         size_t request_size = (size_t)remaining;
@@ -86,8 +101,31 @@ int ai_xiaozhi_vision_set_capability(
         rt_mutex_take(s_capability_lock, RT_WAITING_FOREVER) != RT_EOK)
         return -1;
     s_capability = *capability;
+    s_capability_valid = 1;
     rt_mutex_release(s_capability_lock);
+    /* Diagnostic: proves the session handed out a usable endpoint. */
+    rt_kprintf("vision: endpoint %s://%s:%u%s\n",
+               capability->endpoint.ssl_enabled ? "https" : "http",
+               capability->endpoint.host, (unsigned int)capability->endpoint.port,
+               capability->endpoint.path);
+    rt_kprintf("vision: token_len=%u\n",
+               (unsigned int)strlen(capability->token));
     return 0;
+}
+
+void ai_xiaozhi_vision_clear_capability(void)
+{
+    if (s_capability_lock == RT_NULL)
+    {
+        s_capability_valid = 0;
+        return;
+    }
+    if (rt_mutex_take(s_capability_lock, RT_WAITING_FOREVER) != RT_EOK)
+        return;
+    memset(&s_capability, 0, sizeof(s_capability));
+    s_capability_valid = 0;
+    rt_mutex_release(s_capability_lock);
+    rt_kprintf("vision: capability cleared\n");
 }
 
 int ai_xiaozhi_vision_upload_file(const char *path, const char *question,
@@ -109,17 +147,31 @@ int ai_xiaozhi_vision_upload_file(const char *path, const char *question,
     int content_length;
     int header_size;
     int result = -1;
+    rt_tick_t begin = 0U;
 
-    if (path == RT_NULL || question == RT_NULL ||
-        s_capability_lock == RT_NULL ||
-        rt_mutex_take(s_capability_lock, RT_WAITING_FOREVER) != RT_EOK)
+    if (path == RT_NULL || question == RT_NULL)
+        return -1;
+    if (s_capability_lock == RT_NULL || !s_capability_valid)
+    {
+        /* No usable capability: the session has not handed one out (or the one
+         * it handed out belonged to a session that already ended). */
+        rt_kprintf("vision: no capability yet\n");
+        return -1;
+    }
+    if (rt_mutex_take(s_capability_lock, RT_WAITING_FOREVER) != RT_EOK)
         return -1;
     capability = s_capability;
     rt_mutex_release(s_capability_lock);
+    begin = rt_tick_get();
     if (stat(path, &info) != 0 || info.st_size <= 0 ||
         ai_xiaozhi_vision_build_url(&capability.endpoint, url,
                                     sizeof(url)) < 0)
+    {
+        rt_kprintf("vision: cannot read %s\n", path);
         return -1;
+    }
+    rt_kprintf("vision: post %s (%u bytes)\n", capability.endpoint.path,
+               (unsigned int)info.st_size);
     rt_snprintf(boundary, sizeof(boundary), "ai-camera-%lu",
                 (unsigned long)rt_tick_get());
     prefix_size = ai_xiaozhi_build_multipart_prefix(prefix, sizeof(prefix),
@@ -184,27 +236,210 @@ done:
         webclient_close(session);
         UNLOCK_TCPIP_CORE();
     }
+    rt_kprintf("vision: upload %s elapsed_ms=%lu\n",
+               result == 0 ? "ok" : "FAILED",
+               (unsigned long)((rt_tick_get() - begin) * 1000U /
+                               RT_TICK_PER_SECOND));
     return result;
+}
+
+/* rt_kprintf truncates long lines, so the body is printed in short chunks. */
+static void ai_xiaozhi_vision_print_response(const char *response)
+{
+    size_t length = strlen(response);
+    size_t offset;
+
+    rt_kprintf("vision: response %u bytes\n", (unsigned int)length);
+    for (offset = 0U; offset < length; offset += 96U)
+    {
+        char line[112];
+        size_t size = length - offset;
+
+        if (size > 96U)
+            size = 96U;
+        rt_memcpy(line, response + offset, size);
+        line[size] = '\0';
+        rt_kprintf("v| %s\n", line);
+    }
+}
+
+typedef struct
+{
+    /* 1 for an MCP camera tool call, 0 for the console test command. */
+    int tool_call;
+    char session_id[AI_XIAOZHI_SESSION_ID_MAX];
+    int request_id;
+    char path[AI_XIAOZHI_VISION_PATH_MAX];
+    char question[AI_XIAOZHI_VISION_QUESTION_MAX];
+} ai_xiaozhi_vision_job_t;
+
+static ai_xiaozhi_vision_job_t s_job;
+static volatile int s_job_busy;
+static ai_xiaozhi_vision_photo_provider_t s_photo_provider;
+
+void ai_xiaozhi_vision_set_photo_provider(
+    ai_xiaozhi_vision_photo_provider_t provider)
+{
+    s_photo_provider = provider;
+}
+
+/* The photo a question is about: the one the user just took, otherwise the
+ * newest one in the album (the model asked for a picture either way). */
+static int ai_xiaozhi_vision_pick_photo(char *path, size_t size)
+{
+    photo_store_info_t items[1];
+    size_t written = 0U;
+    uint32_t total = 0U;
+
+    if (s_photo_provider != RT_NULL && s_photo_provider(path, size) == 0)
+    {
+        rt_kprintf("vision: photo pending in the UI\n");
+        return 0;
+    }
+    if (photo_store_list(0U, items, 1U, &written, &total) == 0 &&
+        written == 1U)
+    {
+        rt_kprintf("vision: no pending photo, newest in the album\n");
+        rt_strncpy(path, items[0].path, size - 1U);
+        path[size - 1U] = '\0';
+        return 0;
+    }
+    return -1;
+}
+
+static void ai_xiaozhi_vision_send_tool_result(const char *text, int is_error)
+{
+    char result[AI_XIAOZHI_MCP_TOOL_RESULT_MAX];
+    int size = ai_xiaozhi_build_mcp_tool_result(result, sizeof(result),
+                                                s_job.session_id,
+                                                s_job.request_id, text,
+                                                is_error);
+
+    if (size < 0)
+    {
+        rt_kprintf("vision: tool result build failed\n");
+        return;
+    }
+    if (ai_xiaozhi_websocket_send_text(result, (size_t)size) != 0)
+        rt_kprintf("vision: tool result send failed\n");
+    else
+        rt_kprintf("vision: tool result sent\n");
+}
+
+static void ai_xiaozhi_vision_worker(void *parameter)
+{
+    char response[AI_XIAOZHI_VISION_EXPLAIN_MAX];
+    char text[AI_XIAOZHI_VISION_TEXT_MAX];
+    const char *question = s_job.question[0] != '\0'
+                               ? s_job.question
+                               : AI_XIAOZHI_VISION_DEFAULT_QUESTION;
+
+    (void)parameter;
+    if (s_job.tool_call)
+    {
+        if (ai_xiaozhi_vision_pick_photo(s_job.path, sizeof(s_job.path)) < 0)
+        {
+            rt_kprintf("vision: no photo available\n");
+            ai_xiaozhi_vision_send_tool_result("设备里还没有照片。", 1);
+            goto done;
+        }
+        rt_kprintf("vision: tool call photo %s\n", s_job.path);
+    }
+    if (ai_xiaozhi_vision_upload_file(s_job.path, question, response,
+                                      sizeof(response)) < 0)
+    {
+        rt_kprintf("vision: upload failed\n");
+        if (s_job.tool_call)
+            ai_xiaozhi_vision_send_tool_result("图片上传失败，请稍后再试。", 1);
+        goto done;
+    }
+    if (!s_job.tool_call)
+    {
+        ai_xiaozhi_vision_print_response(response);
+        goto done;
+    }
+    if (ai_xiaozhi_parse_vision_explain_response(response, text,
+                                                sizeof(text)) < 0)
+    {
+        /* Keep the model informed even if the body is not valid JSON. */
+        rt_strncpy(text, response, sizeof(text) - 1U);
+        text[sizeof(text) - 1U] = '\0';
+    }
+    rt_kprintf("vision: tool result %u bytes\n", (unsigned int)strlen(text));
+    ai_xiaozhi_vision_send_tool_result(text, 0);
+done:
+    s_job_busy = 0;
+    /* Just return: rt_thread_exit() runs after the entry returns and does the
+     * teardown (timer detach, defunct list, stack release by the idle thread).
+     * Calling rt_thread_delete(rt_thread_self()) as well detaches the thread
+     * timer twice and trips the assert in rt_timer_detach(). */
+}
+
+static int ai_xiaozhi_vision_start_worker(void)
+{
+    rt_thread_t thread = rt_thread_create(
+        "vision", ai_xiaozhi_vision_worker, RT_NULL,
+        AI_XIAOZHI_VISION_STACK_SIZE, AI_XIAOZHI_VISION_THREAD_PRIORITY, 10U);
+
+    if (thread == RT_NULL)
+        return -1;
+    rt_thread_startup(thread);
+    return 0;
+}
+
+int ai_xiaozhi_vision_request_tool_call(const char *session_id, int request_id,
+                                        const char *question)
+{
+    if (session_id == RT_NULL || question == RT_NULL || request_id < 0)
+        return -1;
+    if (s_job_busy)
+        return -1;
+    s_job_busy = 1;
+    s_job.tool_call = 1;
+    s_job.request_id = request_id;
+    s_job.path[0] = '\0';
+    rt_strncpy(s_job.session_id, session_id, sizeof(s_job.session_id) - 1U);
+    s_job.session_id[sizeof(s_job.session_id) - 1U] = '\0';
+    rt_strncpy(s_job.question, question, sizeof(s_job.question) - 1U);
+    s_job.question[sizeof(s_job.question) - 1U] = '\0';
+    if (ai_xiaozhi_vision_start_worker() != 0)
+    {
+        s_job_busy = 0;
+        return -1;
+    }
+    return 0;
 }
 
 static void ai_xiaozhi_vision_upload(int argc, char **argv)
 {
-    char response[AI_XIAOZHI_VISION_RESPONSE_MAX];
-    const char *question = "Please describe this image.";
+    const char *question = AI_XIAOZHI_VISION_DEFAULT_QUESTION;
 
-    if (argc == 3)
-        question = argv[2];
     if (argc < 2 || argc > 3)
     {
-        rt_kprintf("usage: ai_xiaozhi_vision <jpeg-path> [question]\n");
+        rt_kprintf("usage: ai_xiaozhi_vision_upload <jpeg-path> [question]\n");
         return;
     }
-    if (ai_xiaozhi_vision_upload_file(argv[1], question, response,
-                                      sizeof(response)) < 0)
+    if (argc == 3)
+        question = argv[2];
+    if (s_job_busy)
     {
-        rt_kprintf("xiaozhi: vision upload failed\n");
+        rt_kprintf("vision: another upload is running\n");
         return;
     }
-    rt_kprintf("xiaozhi: vision response %s\n", response);
+    s_job_busy = 1;
+    s_job.tool_call = 0;
+    s_job.session_id[0] = '\0';
+    s_job.request_id = 0;
+    rt_strncpy(s_job.path, argv[1], sizeof(s_job.path) - 1U);
+    s_job.path[sizeof(s_job.path) - 1U] = '\0';
+    rt_strncpy(s_job.question, question, sizeof(s_job.question) - 1U);
+    s_job.question[sizeof(s_job.question) - 1U] = '\0';
+    if (ai_xiaozhi_vision_start_worker() != 0)
+    {
+        s_job_busy = 0;
+        rt_kprintf("vision: cannot start the upload thread\n");
+        return;
+    }
+    rt_kprintf("vision: uploading %s\n", s_job.path);
 }
 MSH_CMD_EXPORT(ai_xiaozhi_vision_upload, upload JPEG for XiaoZhi recognition);

@@ -27,7 +27,8 @@ typedef enum
     CAMERA_MEDIA_PAGE,
     CAMERA_MEDIA_PHOTO,
     CAMERA_MEDIA_ROTATE,
-    CAMERA_MEDIA_PHOTO_INDEX
+    CAMERA_MEDIA_PHOTO_INDEX,
+    CAMERA_MEDIA_DELETE
 } camera_media_kind_t;
 
 typedef enum
@@ -85,6 +86,12 @@ int camera_service_request_photo(const char *path, uint32_t token);
 /* Load one photo by its zero-based position in the full album, newest first.
  * An unavailable position fails; this API does not wrap at album boundaries. */
 int camera_service_request_photo_at(uint32_t offset, uint32_t token);
+/* Removes one album photo by its zero-based position in the full album, newest
+ * first. Filesystem work only, so it also runs while the camera is live. The
+ * result carries the removed record in items[0] with count == 1 and the album
+ * size afterwards in total. Every later position shifts down, so the caller has
+ * to reload the page it is showing. */
+int camera_service_request_delete(uint32_t offset, uint32_t token);
 int camera_service_poll_result(camera_media_result_t *result);
 int camera_service_camera_status(void);
 

@@ -30,8 +30,15 @@ static rt_bool_t s_listening;
 static volatile rt_bool_t s_connect_in_progress;
 static ai_xiaozhi_event_callback_t s_event_callback;
 static void *s_event_context;
+/* MCP replies are built on the WebSocket receive path, which runs on a small
+ * stack, so the buffers live in BSS instead. */
+static char s_mcp_response[AI_XIAOZHI_MCP_TOOL_RESULT_MAX];
+static char s_mcp_tool_name[AI_XIAOZHI_MCP_TOOL_NAME_MAX];
+static char s_mcp_question[AI_XIAOZHI_MCP_QUESTION_MAX];
 static struct rt_work s_audio_disconnect_work;
 static rt_bool_t s_audio_disconnect_work_initialized;
+/* Owned by the assistant UI: the sidebar panel switches it on and off. */
+static volatile int s_session_enabled = 1;
 
 static void ai_xiaozhi_audio_disconnect_work(struct rt_work *work,
                                              void *work_data)
@@ -45,6 +52,26 @@ static void ai_xiaozhi_notify(ai_xiaozhi_event_t event)
 {
     if (s_event_callback != RT_NULL)
         s_event_callback(event, s_event_context);
+}
+
+/* rt_kprintf truncates long lines, so an unrecognised frame is shown in short
+ * chunks and no byte of the protocol is lost. */
+static void ai_xiaozhi_log_frame(const char *text, size_t size)
+{
+    size_t offset;
+
+    rt_kprintf("xiaozhi: unhandled frame %u bytes\n", (unsigned int)size);
+    for (offset = 0U; offset < size; offset += 96U)
+    {
+        char line[112];
+        size_t chunk = size - offset;
+
+        if (chunk > 96U)
+            chunk = 96U;
+        rt_memcpy(line, text + offset, chunk);
+        line[chunk] = '\0';
+        rt_kprintf("ws| %s\n", line);
+    }
 }
 
 void ai_xiaozhi_set_event_callback(ai_xiaozhi_event_callback_t callback,
@@ -70,6 +97,11 @@ int ai_xiaozhi_websocket_is_connecting(void)
     return s_connect_in_progress != RT_FALSE;
 }
 
+int ai_xiaozhi_websocket_is_listening(void)
+{
+    return s_listening != RT_FALSE;
+}
+
 static err_t ai_xiaozhi_websocket_write(const void *data, size_t size,
                                         uint8_t opcode)
 {
@@ -93,6 +125,14 @@ static int ai_xiaozhi_websocket_send_audio(void *context,
            0 : -1;
 }
 
+int ai_xiaozhi_websocket_send_text(const char *text, size_t size)
+{
+    if (text == RT_NULL || size == 0U)
+        return -1;
+    return ai_xiaozhi_websocket_write(text, size, OPCODE_TEXT) == ERR_OK ?
+           0 : -1;
+}
+
 static err_t ai_xiaozhi_websocket_callback(int code, char *buffer, size_t size)
 {
     if (code == WS_CONNECT)
@@ -105,6 +145,8 @@ static err_t ai_xiaozhi_websocket_callback(int code, char *buffer, size_t size)
     {
         rt_bool_t was_ready = s_server_hello_received;
 
+        int reason = (int)(uintptr_t)buffer;
+
         s_connect_status = -1;
         s_server_hello_received = RT_FALSE;
         s_listening = RT_FALSE;
@@ -112,6 +154,8 @@ static err_t ai_xiaozhi_websocket_callback(int code, char *buffer, size_t size)
             (void)rt_work_submit(&s_audio_disconnect_work, 0);
         if (was_ready)
             ai_xiaozhi_notify(AI_XIAOZHI_EVENT_DISCONNECTED);
+        rt_kprintf("xiaozhi: socket closed reason=%d ready=%d\n", reason,
+                   (int)was_ready);
         if (s_connect_waiting)
             rt_sem_release(s_connect_sem);
     }
@@ -157,6 +201,45 @@ static err_t ai_xiaozhi_websocket_callback(int code, char *buffer, size_t size)
                                                      OPCODE_TEXT);
             }
         }
+        else if (ai_xiaozhi_parse_mcp_tools_list_request(
+                     text, mcp_session_id, sizeof(mcp_session_id),
+                     &mcp_request_id) == 0)
+        {
+            /* Announcing a tool is what lets the model ask for a photo. */
+            int response_size = ai_xiaozhi_build_mcp_tools_list_response(
+                s_mcp_response, sizeof(s_mcp_response), mcp_session_id,
+                mcp_request_id);
+
+            rt_kprintf("xiaozhi: tools/list -> announce camera\n");
+            if (response_size >= 0)
+                (void)ai_xiaozhi_websocket_write(s_mcp_response,
+                                                 (size_t)response_size,
+                                                 OPCODE_TEXT);
+        }
+        else if (ai_xiaozhi_parse_mcp_tools_call_request(
+                     text, mcp_session_id, sizeof(mcp_session_id),
+                     &mcp_request_id, s_mcp_tool_name, sizeof(s_mcp_tool_name),
+                     s_mcp_question, sizeof(s_mcp_question)) == 0)
+        {
+            rt_kprintf("xiaozhi: tools/call %s q=%s\n", s_mcp_tool_name,
+                       s_mcp_question);
+            if (ai_xiaozhi_vision_request_tool_call(
+                    mcp_session_id, mcp_request_id, s_mcp_question) != 0)
+            {
+                /* Another photo is still in flight: answer this call anyway so
+                 * the turn does not stall. */
+                int response_size = ai_xiaozhi_build_mcp_tool_result(
+                    s_mcp_response, sizeof(s_mcp_response), mcp_session_id,
+                    mcp_request_id, "设备正在处理上一张照片，请稍后再试。", 1);
+
+                if (response_size >= 0)
+                    (void)ai_xiaozhi_websocket_write(s_mcp_response,
+                                                     (size_t)response_size,
+                                                     OPCODE_TEXT);
+            }
+        }
+        else
+            ai_xiaozhi_log_frame(text, size);
     }
     else if (code == WS_DATA)
     {
@@ -188,9 +271,11 @@ static int ai_xiaozhi_connect_request(void)
         ai_xiaozhi_notify(AI_XIAOZHI_EVENT_ERROR);
         return -1;
     }
+
     if (activation.activation_pending)
         rt_kprintf("xiaozhi: unbound device, bind code %s\n",
                    activation.activation_code);
+
     if (ai_xiaozhi_get_identity(device_id, sizeof(device_id), client_id,
                                 sizeof(client_id)) < 0)
     {
@@ -198,6 +283,7 @@ static int ai_xiaozhi_connect_request(void)
         ai_xiaozhi_notify(AI_XIAOZHI_EVENT_ERROR);
         return -1;
     }
+
     if (s_connect_sem == RT_NULL)
         s_connect_sem = rt_sem_create("xz_conn", 0, RT_IPC_FLAG_FIFO);
     if (s_write_lock == RT_NULL)
@@ -211,6 +297,7 @@ static int ai_xiaozhi_connect_request(void)
 
     error = wsock_init(&s_socket, activation.endpoint.ssl_enabled, 1,
                        ai_xiaozhi_websocket_callback);
+
     if (error != ERR_OK)
     {
         rt_kprintf("xiaozhi: WebSocket init failed %d\n", error);
@@ -266,9 +353,24 @@ static void ai_xiaozhi_connect(int argc, char **argv)
         rt_kprintf("usage: ai_xiaozhi_connect\n");
         return;
     }
+    /* Asking for a session from the console switches the retry back on. */
+    ai_xiaozhi_session_set_enabled(1);
     (void)ai_xiaozhi_connect_request();
 }
 MSH_CMD_EXPORT(ai_xiaozhi_connect, connect XiaoZhi WebSocket);
+
+static void ai_xiaozhi_disconnect(int argc, char **argv)
+{
+    (void)argv;
+    if (argc != 1)
+    {
+        rt_kprintf("usage: ai_xiaozhi_disconnect\n");
+        return;
+    }
+    ai_xiaozhi_session_set_enabled(0);
+    ai_xiaozhi_session_close();
+}
+MSH_CMD_EXPORT(ai_xiaozhi_disconnect, close the XiaoZhi WebSocket session);
 
 static void ai_xiaozhi_connect_worker(void *parameter)
 {
@@ -292,6 +394,32 @@ int ai_xiaozhi_connect_async(void)
     s_connect_in_progress = RT_TRUE;
     rt_thread_startup(thread);
     return 0;
+}
+
+void ai_xiaozhi_session_set_enabled(int enabled)
+{
+    s_session_enabled = enabled ? 1 : 0;
+}
+
+int ai_xiaozhi_session_enabled(void)
+{
+    return s_session_enabled != 0;
+}
+
+/* Local close. The session is torn down the same way a server close is, only the
+ * Bluetooth PAN link is left alone; the app keeps its own retry policy. */
+void ai_xiaozhi_session_close(void)
+{
+    if (s_socket.pcb == RT_NULL)
+        return;
+    s_listening = RT_FALSE;
+    s_server_hello_received = RT_FALSE;
+    if (s_audio_disconnect_work_initialized)
+        (void)rt_work_submit(&s_audio_disconnect_work, 0);
+    if (wsock_close(&s_socket, WSOCK_RESULT_LOCAL_ABORT, ERR_OK) != ERR_OK)
+        rt_kprintf("xiaozhi: session close failed\n");
+    else
+        rt_kprintf("xiaozhi: session closed locally\n");
 }
 
 static int ai_xiaozhi_send_listen(rt_bool_t start)

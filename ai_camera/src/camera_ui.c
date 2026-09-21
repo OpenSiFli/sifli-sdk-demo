@@ -1,8 +1,13 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include "camera_ui.h"
 #include "camera_ui_font.h"
+#include "camera_ui_strings.h"
 #include "camera_service.h"
 #include "camera_keys.h"
+#include "learning_camera_status.h"
+#include "xiaozhi_activation.h"
+#include "xiaozhi_vision.h"
+#include "xiaozhi_websocket.h"
 
 #include <bf0_hal.h>
 #include <drv_epic.h>
@@ -19,17 +24,62 @@
 #define CAMERA_UI_WIDTH 1024
 #define CAMERA_UI_HEIGHT 600
 #define CAMERA_UI_PHOTO_INFO_HEIGHT 40U
-#define CAMERA_UI_HOME_COUNT 6U
+/* The live view keeps no album grid any more: it only asks for the newest
+ * thumbnail, which feeds the pending-question preview. */
+#define CAMERA_UI_HOME_PAGE_COUNT 1U
 #define CAMERA_UI_STACK_SIZE 6144U
 #define CAMERA_UI_PRIORITY 20U
 #define CAMERA_UI_POLL_MS 10U
 #define CAMERA_UI_DIAG_WINDOW_MS 5000U
 #define CAMERA_UI_CONTROL_X (CAMERA_LIVE_WIDTH + 16U)
 #define CAMERA_UI_CONTROL_WIDTH (CAMERA_UI_WIDTH - CAMERA_UI_CONTROL_X - 16U)
-#define CAMERA_UI_HOME_THUMB_WIDTH 85U
-#define CAMERA_UI_HOME_THUMB_HEIGHT 64U
+/* Sidebar status panel, above 拍摄. State display only: it never joins the key
+ * group and its background is a neutral slate, deliberately unlike the blue of
+ * 拍摄/打开图库 so it cannot be mistaken for a button.
+ * The font has no glyph for "XiaoZhi" in Chinese, and 已/未/就/绪 come from the
+ * existing subset ("相机未就绪"). */
+#define CAMERA_UI_XIAOZHI_Y 8
+#define CAMERA_UI_XIAOZHI_HEIGHT 44U
+#define CAMERA_UI_XIAOZHI_BG_COLOR 0x1f2937
+#define CAMERA_UI_XIAOZHI_READY_COLOR 0x00e5b0
+#define CAMERA_UI_XIAOZHI_OFFLINE_COLOR 0xff3b30
+
+#define CAMERA_UI_XIAOZHI_BORDER_COLOR 0x3c4759
+#define CAMERA_UI_XIAOZHI_PRESSED_COLOR 0x2a3646
+/* Pending-question preview: the frame is 4:3 like the stored thumbnail, and the
+ * 3 px border sits outside the scaled image. It shares its left edge with the
+ * voice control below it. */
+#define CAMERA_UI_PENDING_WIDTH 128U
+#define CAMERA_UI_PENDING_HEIGHT 96U
+#define CAMERA_UI_PENDING_BORDER 3U
+#define CAMERA_UI_PENDING_X CAMERA_UI_CONTROL_X
+#define CAMERA_UI_PENDING_Y 236
+#define CAMERA_UI_PENDING_COLOR 0xffd166
+/* Voice control, shaped like a chat recorder bar. */
+#define CAMERA_UI_VOICE_Y 350
+#define CAMERA_UI_VOICE_HEIGHT 52U
+#define CAMERA_UI_VOICE_RADIUS (CAMERA_UI_VOICE_HEIGHT / 2U)
+#define CAMERA_UI_VOICE_BORDER 2U
+#define CAMERA_UI_VOICE_TEXT_WIDTH \
+    (CAMERA_UI_CONTROL_WIDTH - 2U * CAMERA_UI_VOICE_BORDER)
+#define CAMERA_UI_VOICE_BORDER_COLOR 0x3c4759
+/* How long "sent" stays up if no answer starts, so the bar cannot stick. */
+#define CAMERA_UI_VOICE_SENT_TIMEOUT_MS 10000U
+/* How long the refused push-to-talk hint stays up. */
+#define CAMERA_UI_VOICE_OFFLINE_TIMEOUT_MS 3000U
 #define CAMERA_UI_GALLERY_THUMB_WIDTH 160U
 #define CAMERA_UI_GALLERY_THUMB_HEIGHT 120U
+/* Album delete mode. The button sits next to 返回 and is the only way in and
+ * out; while it is armed a tap on a thumbnail removes that photo instead of
+ * opening it. */
+#define CAMERA_UI_DELETE_BUTTON_X 176
+#define CAMERA_UI_DELETE_BUTTON_Y 24
+#define CAMERA_UI_DELETE_BUTTON_WIDTH 128
+#define CAMERA_UI_DELETE_BUTTON_HEIGHT 56
+#define CAMERA_UI_DELETE_IDLE_COLOR 0x556070
+#define CAMERA_UI_DELETE_IDLE_PRESSED_COLOR 0x39424f
+#define CAMERA_UI_DELETE_ARMED_COLOR 0xd92d2d
+#define CAMERA_UI_DELETE_ARMED_PRESSED_COLOR 0xa31f1f
 
 typedef enum
 {
@@ -37,6 +87,37 @@ typedef enum
     CAMERA_VIEW_GALLERY,
     CAMERA_VIEW_PHOTO
 } camera_view_t;
+
+/* Voice control states. The words live in camera_ui_strings.h so the wording can
+ * change (Chinese, once the font subset carries the glyphs) without touching the
+ * layout. */
+typedef enum
+{
+    CAMERA_UI_VOICE_IDLE = 0,
+    CAMERA_UI_VOICE_LISTENING,
+    CAMERA_UI_VOICE_SENT,
+    CAMERA_UI_VOICE_ANSWERING,
+    CAMERA_UI_VOICE_OFFLINE,
+    CAMERA_UI_VOICE_STATE_COUNT,
+} camera_ui_voice_state_t;
+
+typedef struct
+{
+    const char *text;
+    uint32_t text_color;
+    uint32_t background;
+} camera_ui_voice_style_t;
+
+/* An open microphone is amber, the answer is blue, everything else is muted. */
+static const camera_ui_voice_style_t s_voice_styles[CAMERA_UI_VOICE_STATE_COUNT] =
+{
+    [CAMERA_UI_VOICE_IDLE] = {CAMERA_UI_TEXT_VOICE_IDLE, 0x8b95a5, 0x232a36},
+    [CAMERA_UI_VOICE_LISTENING] = {CAMERA_UI_TEXT_VOICE_LISTENING, 0xffd166, 0x3a3122},
+    [CAMERA_UI_VOICE_SENT] = {CAMERA_UI_TEXT_VOICE_SENT, 0xcbd5e1, 0x2a3340},
+    [CAMERA_UI_VOICE_ANSWERING] = {CAMERA_UI_TEXT_VOICE_ANSWERING, 0x66d9ff, 0x22333d},
+    /* Refused push-to-talk: nothing was sent, so the bar says so instead. */
+    [CAMERA_UI_VOICE_OFFLINE] = {CAMERA_UI_TEXT_VOICE_OFFLINE, 0xff8a80, 0x3a2222},
+};
 
 static rt_thread_t s_thread;
 static lv_group_t *s_key_group;
@@ -46,12 +127,19 @@ static lv_obj_t *s_live_image;
 static lv_obj_t *s_capture_overlay;
 static lv_obj_t *s_capture_message;
 static lv_obj_t *s_camera_status;
+static lv_obj_t *s_xiaozhi_panel;
+static lv_obj_t *s_xiaozhi_status;
+static lv_obj_t *s_pending_photo;
+static lv_obj_t *s_pending_image;
+static lv_obj_t *s_voice_widget;
+static lv_obj_t *s_voice_label;
 static lv_obj_t *s_full_image;
 static lv_obj_t *s_photo_info;
-static lv_obj_t *s_home_tiles[CAMERA_UI_HOME_COUNT];
-static lv_obj_t *s_home_images[CAMERA_UI_HOME_COUNT];
 static lv_obj_t *s_gallery_tiles[CAMERA_PAGE_SIZE];
 static lv_obj_t *s_gallery_images[CAMERA_PAGE_SIZE];
+/* Album delete mode: armed by the gallery delete button. */
+static lv_obj_t *s_delete_button;
+static int s_delete_armed;
 static lv_obj_t *s_capture_button;
 static lv_obj_t *s_gallery_button;
 static lv_obj_t *s_back_button;
@@ -81,6 +169,22 @@ static int s_capture_prompt_visible;
 static camera_capture_stage_t s_capture_stage;
 static int s_display_started;
 static int s_refresh_home;
+/* Text currently on the sidebar panel, so a poll only touches LVGL when it
+ * changes. Empty until the first poll writes it. */
+static char s_xiaozhi_text[40];
+static camera_ui_voice_state_t s_voice_state = CAMERA_UI_VOICE_IDLE;
+/* Tick of the last accepted stop request: the bar keeps showing "sent" until an
+ * answer starts or the wait times out. */
+static rt_tick_t s_voice_sent_tick;
+/* Tick of the last refused push-to-talk, and whether the hold that is running
+ * now was refused: the release must not report a question that never left. */
+static rt_tick_t s_voice_offline_tick;
+static int s_talk_rejected;
+/* The photo a spoken question would be about: set by a successful capture and
+ * shown from the newest thumbnail, which the capture refresh loads right after.
+ * It survives view changes and is dropped by a reboot. */
+static char s_pending_photo_path[PHOTO_STORE_PATH_MAX];
+static int s_pending_photo_valid;
 static const char *s_after_page_status;
 static const uint8_t s_black_pixel[2] = {0, 0};
 static const lv_img_dsc_t s_empty_image = {
@@ -92,6 +196,9 @@ static const lv_img_dsc_t s_empty_image = {
 static void camera_ui_request_page(uint32_t offset);
 static void camera_ui_update_controls(void);
 static void camera_ui_focus_available(void);
+static void camera_ui_delete_apply_style(void);
+static void camera_ui_delete_disarm(void);
+static void camera_ui_delete_submit(uint32_t offset);
 
 typedef struct
 {
@@ -148,6 +255,7 @@ static unsigned long camera_ui_ticks_ms(rt_tick_t ticks)
 
 static void camera_ui_diag_report(void)
 {
+#ifdef LEARNING_CAMERA_UI_LOG
     camera_ui_diag_t stats;
     rt_tick_t now;
     rt_tick_t elapsed;
@@ -178,11 +286,22 @@ static void camera_ui_diag_report(void)
     rt_kprintf("camera.ui.redraw: video_only=%lu with_sidebar=%lu source_expired=%lu\n",
                (unsigned long)stats.redraw_video_only, (unsigned long)stats.redraw_sidebar,
                (unsigned long)stats.source_expired);
+#endif /* LEARNING_CAMERA_UI_LOG */
 }
 
 static void camera_ui_status(const char *text)
 {
     lv_label_set_text(s_status[s_view], text);
+}
+
+static int camera_ui_pending_photo(char *path, size_t size)
+{
+    if (path == NULL || size == 0U || !s_pending_photo_valid ||
+        s_pending_photo_path[0] == '\0')
+        return -1;
+    rt_strncpy(path, s_pending_photo_path, size - 1U);
+    path[size - 1U] = '\0';
+    return 0;
 }
 
 static void camera_ui_set_disabled(lv_obj_t *object, int disabled)
@@ -366,8 +485,6 @@ static int camera_ui_detach_media(void)
 {
     size_t index;
 
-    for (index = 0U; index < CAMERA_UI_HOME_COUNT; ++index)
-        lv_obj_add_flag(s_home_tiles[index], LV_OBJ_FLAG_HIDDEN);
     for (index = 0U; index < CAMERA_PAGE_SIZE; ++index)
         lv_obj_add_flag(s_gallery_tiles[index], LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_full_image, LV_OBJ_FLAG_HIDDEN);
@@ -379,11 +496,15 @@ static int camera_ui_detach_media(void)
     {
         lv_img_cache_invalidate_src(&s_thumb_dsc[index]);
         lv_img_set_src(s_gallery_images[index], &s_empty_image);
-        if (index < CAMERA_UI_HOME_COUNT)
-            lv_img_set_src(s_home_images[index], &s_empty_image);
     }
     lv_img_cache_invalidate_src(&s_full_image_dsc);
     lv_img_set_src(s_full_image, &s_empty_image);
+    /* The pending preview borrows thumbnail 0, so it must go as well. */
+    if (s_pending_photo != NULL)
+    {
+        lv_img_set_src(s_pending_image, &s_empty_image);
+        lv_obj_add_flag(s_pending_photo, LV_OBJ_FLAG_HIDDEN);
+    }
     return 0;
 }
 
@@ -411,7 +532,13 @@ static void camera_ui_set_view(camera_view_t view)
     }
     if (s_view != view)
         camera_ui_diag_reset();
+    /* Delete mode belongs to the album and never survives leaving it. */
+    if (s_view != view && s_view == CAMERA_VIEW_GALLERY)
+        camera_ui_delete_disarm();
     s_view = view;
+    /* KEY3 long press is push-to-talk on the live view only; elsewhere it stays
+     * the BACK action. */
+    camera_keys_set_talk_enabled(view == CAMERA_VIEW_HOME);
     if (s_display_started)
         camera_service_set_live(view == CAMERA_VIEW_HOME);
     if (view != CAMERA_VIEW_HOME)
@@ -430,7 +557,7 @@ static uint32_t camera_ui_token(void)
 
 static void camera_ui_request_page(uint32_t offset)
 {
-    uint32_t count = s_view == CAMERA_VIEW_HOME ? CAMERA_UI_HOME_COUNT
+    uint32_t count = s_view == CAMERA_VIEW_HOME ? CAMERA_UI_HOME_PAGE_COUNT
                                                 : CAMERA_PAGE_SIZE;
     uint32_t token;
     int result;
@@ -608,6 +735,12 @@ static void camera_ui_thumbnail_event(lv_event_t *event)
 
     if (s_loading || s_view == CAMERA_VIEW_PHOTO || index >= s_item_count)
         return;
+    if (s_view == CAMERA_VIEW_GALLERY && s_delete_armed)
+    {
+        /* Delete mode: the touched photo goes away without a preview. */
+        camera_ui_delete_submit(s_gallery_offset + (uint32_t)index);
+        return;
+    }
     offset = (s_view == CAMERA_VIEW_HOME ? 0U : s_gallery_offset) + (uint32_t)index;
     s_photo_origin = s_view;
     s_photo_offset = offset;
@@ -644,6 +777,77 @@ static void camera_ui_photo_close_event(lv_event_t *event)
     camera_ui_set_view(s_photo_origin);
     camera_ui_request_page(s_photo_origin == CAMERA_VIEW_HOME ? 0U :
                            s_photo_offset / CAMERA_PAGE_SIZE * CAMERA_PAGE_SIZE);
+}
+
+static void camera_ui_reconnect_event(lv_event_t *event)
+{
+    (void)event;
+    if (ai_xiaozhi_websocket_is_active())
+    {
+        ai_xiaozhi_session_set_enabled(0);
+        ai_xiaozhi_session_close();
+        rt_kprintf("camera: XiaoZhi session switched off\n");
+        return;
+    }
+    ai_xiaozhi_session_set_enabled(1);
+    if (ai_xiaozhi_connect_async() < 0)
+        rt_kprintf("camera: XiaoZhi connect request failed\n");
+    else
+        rt_kprintf("camera: XiaoZhi session switched on\n");
+}
+
+static void camera_ui_delete_apply_style(void)
+{
+    if (s_delete_button == NULL)
+        return;
+    lv_obj_set_style_bg_color(s_delete_button,
+                              lv_color_hex(s_delete_armed
+                                               ? CAMERA_UI_DELETE_ARMED_COLOR
+                                               : CAMERA_UI_DELETE_IDLE_COLOR),
+                              LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_delete_button,
+                              lv_color_hex(s_delete_armed
+                                               ? CAMERA_UI_DELETE_ARMED_PRESSED_COLOR
+                                               : CAMERA_UI_DELETE_IDLE_PRESSED_COLOR),
+                              LV_PART_MAIN | LV_STATE_PRESSED);
+}
+
+/* Leaving delete mode never touches the status label: the caller decides. */
+static void camera_ui_delete_disarm(void)
+{
+    if (!s_delete_armed)
+        return;
+    s_delete_armed = 0;
+    camera_ui_delete_apply_style();
+}
+
+static void camera_ui_delete_submit(uint32_t offset)
+{
+    uint32_t token = camera_ui_token();
+    int result = camera_service_request_delete(offset, token);
+
+    if (result < 0)
+    {
+        /* Busy or storage refused: the album is left exactly as it was. */
+        camera_ui_status(CAMERA_UI_TEXT_DELETE_FAILED);
+        return;
+    }
+    s_pending_kind = CAMERA_MEDIA_DELETE;
+    s_pending_token = token;
+    s_loading = 1;
+    camera_ui_status(CAMERA_UI_TEXT_DELETE_BUSY);
+    camera_ui_update_controls();
+}
+
+/* One press arms delete mode, the next press leaves it again. */
+static void camera_ui_delete_event(lv_event_t *event)
+{
+    (void)event;
+    if (s_loading || s_view != CAMERA_VIEW_GALLERY)
+        return;
+    s_delete_armed = !s_delete_armed;
+    camera_ui_delete_apply_style();
+    camera_ui_status(s_delete_armed ? CAMERA_UI_TEXT_DELETE_ARMED : "");
 }
 
 static lv_obj_t *camera_ui_tile(lv_obj_t *parent, int x, int y,
@@ -697,31 +901,117 @@ static void camera_ui_create(void)
     lv_obj_add_event_cb(s_roots[CAMERA_VIEW_HOME], camera_ui_home_background_event,
                        LV_EVENT_DRAW_MAIN_END, NULL);
     s_camera_status = camera_ui_label(s_roots[CAMERA_VIEW_HOME],
-                                       "加载中", CAMERA_UI_CONTROL_X, 204,
+                                       "加载中", CAMERA_UI_CONTROL_X, 404,
                                        CAMERA_UI_CONTROL_WIDTH);
     s_capture_button = camera_ui_button(s_roots[CAMERA_VIEW_HOME], "拍摄",
-                                         CAMERA_UI_CONTROL_X, 24,
+                                         CAMERA_UI_CONTROL_X, 60,
                                          CAMERA_UI_CONTROL_WIDTH, 72,
                                          camera_ui_capture_event, 0U);
     s_gallery_button = camera_ui_button(s_roots[CAMERA_VIEW_HOME], "打开图库",
-                                         CAMERA_UI_CONTROL_X, 112,
+                                         CAMERA_UI_CONTROL_X, 148,
                                          CAMERA_UI_CONTROL_WIDTH, 72,
                                          camera_ui_gallery_event, 0U);
     s_status[CAMERA_VIEW_HOME] = camera_ui_label(s_roots[CAMERA_VIEW_HOME],
-                                                 "", CAMERA_UI_CONTROL_X, 246,
+                                                 "", CAMERA_UI_CONTROL_X, 438,
                                                  CAMERA_UI_CONTROL_WIDTH);
-    for (index = 0U; index < CAMERA_UI_HOME_COUNT; ++index)
-        s_home_tiles[index] = camera_ui_tile(s_roots[CAMERA_VIEW_HOME],
-                                              CAMERA_UI_CONTROL_X +
-                                                  (int)(index % 2U) *
-                                                  (CAMERA_UI_CONTROL_WIDTH - CAMERA_UI_HOME_THUMB_WIDTH),
-                                              316 + (int)(index / 2U) * 92,
-                                              CAMERA_UI_HOME_THUMB_WIDTH,
-                                              CAMERA_UI_HOME_THUMB_HEIGHT, index,
-                                              &s_home_images[index]);
+    s_xiaozhi_panel = lv_obj_create(s_roots[CAMERA_VIEW_HOME]);
+    lv_obj_set_pos(s_xiaozhi_panel, CAMERA_UI_CONTROL_X, CAMERA_UI_XIAOZHI_Y);
+    lv_obj_set_size(s_xiaozhi_panel, CAMERA_UI_CONTROL_WIDTH,
+                    CAMERA_UI_XIAOZHI_HEIGHT);
+    lv_obj_set_style_bg_color(s_xiaozhi_panel,
+                              lv_color_hex(CAMERA_UI_XIAOZHI_BG_COLOR),
+                              LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_xiaozhi_panel, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(s_xiaozhi_panel, 0, LV_PART_MAIN);
+    lv_obj_set_style_radius(s_xiaozhi_panel, 12, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(s_xiaozhi_panel, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(s_xiaozhi_panel, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(s_xiaozhi_panel, LV_OBJ_FLAG_SCROLLABLE);
+    /* The panel doubles as the manual reconnect control: the server closes idle
+     * sessions, so a tap or a KEY3 press asks for a new one right away. */
+    lv_obj_set_style_border_width(s_xiaozhi_panel, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_color(s_xiaozhi_panel,
+                                  lv_color_hex(CAMERA_UI_XIAOZHI_BORDER_COLOR),
+                                  LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_xiaozhi_panel,
+                              lv_color_hex(CAMERA_UI_XIAOZHI_PRESSED_COLOR),
+                              LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_add_flag(s_xiaozhi_panel, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_xiaozhi_panel, camera_ui_reconnect_event,
+                        LV_EVENT_CLICKED, NULL);
+    camera_ui_key_target(s_xiaozhi_panel);
+    s_xiaozhi_status = camera_ui_label(s_xiaozhi_panel, "XiaoZhi 未就绪", 0, 0,
+                                       CAMERA_UI_CONTROL_WIDTH);
+    /* The bind code must stay on one line, so clip instead of wrapping. */
+    lv_label_set_long_mode(s_xiaozhi_status, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_color(s_xiaozhi_status,
+                                lv_color_hex(CAMERA_UI_XIAOZHI_OFFLINE_COLOR),
+                                LV_PART_MAIN);
+    lv_obj_clear_flag(s_xiaozhi_status, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_center(s_xiaozhi_status);
+    s_pending_photo = lv_obj_create(s_roots[CAMERA_VIEW_HOME]);
+    lv_obj_set_pos(s_pending_photo, CAMERA_UI_PENDING_X, CAMERA_UI_PENDING_Y);
+    lv_obj_set_size(s_pending_photo,
+                    CAMERA_UI_PENDING_WIDTH + 2U * CAMERA_UI_PENDING_BORDER,
+                    CAMERA_UI_PENDING_HEIGHT + 2U * CAMERA_UI_PENDING_BORDER);
+    lv_obj_set_style_bg_color(s_pending_photo, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_pending_photo, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(s_pending_photo, CAMERA_UI_PENDING_BORDER,
+                                  LV_PART_MAIN);
+    lv_obj_set_style_border_color(s_pending_photo,
+                                  lv_color_hex(CAMERA_UI_PENDING_COLOR),
+                                  LV_PART_MAIN);
+    lv_obj_set_style_radius(s_pending_photo, 6, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(s_pending_photo, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(s_pending_photo, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(s_pending_photo, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_pending_photo, LV_OBJ_FLAG_CLICKABLE);
+    s_pending_image = lv_img_create(s_pending_photo);
+    lv_img_set_src(s_pending_image, &s_empty_image);
+    lv_obj_clear_flag(s_pending_image, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(s_pending_photo, LV_OBJ_FLAG_HIDDEN);
+    s_voice_widget = lv_obj_create(s_roots[CAMERA_VIEW_HOME]);
+    lv_obj_set_pos(s_voice_widget, CAMERA_UI_CONTROL_X, CAMERA_UI_VOICE_Y);
+    lv_obj_set_size(s_voice_widget, CAMERA_UI_CONTROL_WIDTH,
+                    CAMERA_UI_VOICE_HEIGHT);
+    lv_obj_set_style_bg_color(s_voice_widget,
+                              lv_color_hex(s_voice_styles[CAMERA_UI_VOICE_IDLE]
+                                               .background),
+                              LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_voice_widget, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(s_voice_widget, CAMERA_UI_VOICE_BORDER,
+                                  LV_PART_MAIN);
+    lv_obj_set_style_border_color(s_voice_widget,
+                                  lv_color_hex(CAMERA_UI_VOICE_BORDER_COLOR),
+                                  LV_PART_MAIN);
+    lv_obj_set_style_radius(s_voice_widget, CAMERA_UI_VOICE_RADIUS, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(s_voice_widget, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(s_voice_widget, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(s_voice_widget, LV_OBJ_FLAG_SCROLLABLE);
+    /* State display only: it never joins the key group. */
+    lv_obj_clear_flag(s_voice_widget, LV_OBJ_FLAG_CLICKABLE);
+    s_voice_label = camera_ui_label(s_voice_widget,
+                                    s_voice_styles[CAMERA_UI_VOICE_IDLE].text, 0,
+                                    0, CAMERA_UI_VOICE_TEXT_WIDTH);
+    lv_obj_set_style_text_color(s_voice_label,
+                                lv_color_hex(s_voice_styles[CAMERA_UI_VOICE_IDLE]
+                                                 .text_color),
+                                LV_PART_MAIN);
+    lv_obj_clear_flag(s_voice_label, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_center(s_voice_label);
     s_back_button = camera_ui_button(s_roots[CAMERA_VIEW_GALLERY], "返回",
                                       32, 24, 128, 56,
                                       camera_ui_home_event, 0U);
+    /* Right next to 返回, so KEY3 short press reaches it after one PREVIOUS or
+     * NEXT: 返回 -> delete -> 上一页 -> 下一页 -> thumbnails. */
+    s_delete_button = camera_ui_button(s_roots[CAMERA_VIEW_GALLERY],
+                                       CAMERA_UI_TEXT_DELETE_BUTTON,
+                                       CAMERA_UI_DELETE_BUTTON_X,
+                                       CAMERA_UI_DELETE_BUTTON_Y,
+                                       CAMERA_UI_DELETE_BUTTON_WIDTH,
+                                       CAMERA_UI_DELETE_BUTTON_HEIGHT,
+                                       camera_ui_delete_event, 0U);
+    camera_ui_delete_apply_style();
     s_page_label = camera_ui_label(s_roots[CAMERA_VIEW_GALLERY], "0 / 0",
                                     384, 36, 256);
     s_previous_button = camera_ui_button(s_roots[CAMERA_VIEW_GALLERY], "上一页",
@@ -772,10 +1062,10 @@ static void camera_ui_update_controls(void)
     camera_ui_set_disabled(s_back_button, s_loading);
     camera_ui_set_disabled(s_previous_button, s_loading || s_gallery_offset == 0U);
     camera_ui_set_disabled(s_next_button, s_loading || last_page);
-    for (index = 0U; index < CAMERA_UI_HOME_COUNT; ++index)
-        camera_ui_set_disabled(s_home_tiles[index], s_loading);
     for (index = 0U; index < CAMERA_PAGE_SIZE; ++index)
         camera_ui_set_disabled(s_gallery_tiles[index], s_loading);
+    if (s_delete_button != NULL)
+        camera_ui_set_disabled(s_delete_button, s_loading);
     if (!s_loading)
         camera_ui_focus_available();
 }
@@ -783,31 +1073,34 @@ static void camera_ui_update_controls(void)
 static void camera_ui_show_page(const camera_media_result_t *result)
 {
     size_t index;
-    size_t limit = s_view == CAMERA_VIEW_HOME ? CAMERA_UI_HOME_COUNT
+    size_t limit = s_view == CAMERA_VIEW_HOME ? CAMERA_UI_HOME_PAGE_COUNT
                                               : CAMERA_PAGE_SIZE;
     uint32_t pages;
     char page_text[32];
 
     s_total = result->total;
     s_item_count = result->count > limit ? limit : result->count;
-    for (index = 0U; index < s_item_count; ++index)
+    if (s_view == CAMERA_VIEW_HOME)
     {
-        lv_obj_t *image = s_view == CAMERA_VIEW_HOME ? s_home_images[index]
-                                                      : s_gallery_images[index];
-        lv_obj_t *tile = s_view == CAMERA_VIEW_HOME ? s_home_tiles[index]
-                                                     : s_gallery_tiles[index];
-
+        /* The live view has no album grid: thumbnail 0 only feeds the
+         * pending-question preview. */
+        if (s_item_count > 0U && result->thumbnails[0] != NULL)
+            camera_ui_image_desc(&s_thumb_dsc[0], result->thumbnails[0],
+                                 CAMERA_THUMB_WIDTH, CAMERA_THUMB_HEIGHT);
+        else
+            memset(&s_thumb_dsc[0], 0, sizeof(s_thumb_dsc[0]));
+    }
+    for (index = 0U; s_view != CAMERA_VIEW_HOME && index < s_item_count; ++index)
+    {
         if (result->thumbnails[index] == NULL)
             continue;
         camera_ui_image_desc(&s_thumb_dsc[index], result->thumbnails[index],
                               CAMERA_THUMB_WIDTH, CAMERA_THUMB_HEIGHT);
-        lv_img_set_src(image, &s_thumb_dsc[index]);
-        camera_ui_fit_thumbnail(image,
-            s_view == CAMERA_VIEW_HOME ? CAMERA_UI_HOME_THUMB_WIDTH
-                                       : CAMERA_UI_GALLERY_THUMB_WIDTH,
-            s_view == CAMERA_VIEW_HOME ? CAMERA_UI_HOME_THUMB_HEIGHT
-                                       : CAMERA_UI_GALLERY_THUMB_HEIGHT);
-        lv_obj_clear_flag(tile, LV_OBJ_FLAG_HIDDEN);
+        lv_img_set_src(s_gallery_images[index], &s_thumb_dsc[index]);
+        camera_ui_fit_thumbnail(s_gallery_images[index],
+                                CAMERA_UI_GALLERY_THUMB_WIDTH,
+                                CAMERA_UI_GALLERY_THUMB_HEIGHT);
+        lv_obj_clear_flag(s_gallery_tiles[index], LV_OBJ_FLAG_HIDDEN);
     }
     if (s_view == CAMERA_VIEW_GALLERY)
     {
@@ -819,11 +1112,21 @@ static void camera_ui_show_page(const camera_media_result_t *result)
                     (unsigned long)pages);
         lv_label_set_text(s_page_label, page_text);
     }
-    if (s_after_page_status != NULL && s_view == CAMERA_VIEW_HOME)
+    if (s_view == CAMERA_VIEW_HOME && s_pending_photo_valid &&
+        s_item_count > 0U && s_thumb_dsc[0].data != NULL)
+    {
+        lv_img_set_src(s_pending_image, &s_thumb_dsc[0]);
+        camera_ui_fit_thumbnail(s_pending_image, CAMERA_UI_PENDING_WIDTH,
+                                CAMERA_UI_PENDING_HEIGHT);
+        lv_obj_clear_flag(s_pending_photo, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_after_page_status != NULL)
     {
         camera_ui_status(s_after_page_status);
         s_after_page_status = NULL;
     }
+    else if (s_delete_armed && s_view == CAMERA_VIEW_GALLERY && s_item_count > 0U)
+        camera_ui_status(CAMERA_UI_TEXT_DELETE_ARMED);
     else
         camera_ui_status(s_item_count == 0U ? "暂无照片" : "");
 }
@@ -849,6 +1152,17 @@ static void camera_ui_poll_media(void)
         camera_ui_capture_prompt(result.preview_status == RT_EOK ? "加载中..." : "相机未就绪");
         s_after_page_status = result.status == 0 ? "已保存" : NULL;
         s_refresh_home = result.status == 0;
+        if (result.status == 0 && result.count > 0U)
+        {
+            /* What a later question would be about. The preview itself comes
+             * from the refreshed thumbnails, where this photo is the newest. */
+            rt_strncpy(s_pending_photo_path, result.items[0].path,
+                       sizeof(s_pending_photo_path) - 1U);
+            s_pending_photo_path[sizeof(s_pending_photo_path) - 1U] = '\0';
+            s_pending_photo_valid = 1;
+            rt_kprintf("camera: pending question photo %s\n",
+                       s_pending_photo_path);
+        }
         camera_ui_status(result.status == 0 ? "已保存" : "拍摄失败");
     }
     else if (result.kind == CAMERA_MEDIA_ROTATE)
@@ -857,6 +1171,37 @@ static void camera_ui_poll_media(void)
         s_after_page_status = result.status == RT_EOK ? NULL : "失败";
         s_refresh_home = 1;
         camera_ui_status(result.status == RT_EOK ? "" : "失败");
+    }
+    else if (result.kind == CAMERA_MEDIA_DELETE)
+    {
+        uint32_t offset = s_gallery_offset;
+
+        if (result.status == 0)
+        {
+            /* A spoken question must not point at a photo that is gone. */
+            if (result.count > 0U && s_pending_photo_valid &&
+                strcmp(s_pending_photo_path, result.items[0].path) == 0)
+            {
+                s_pending_photo_valid = 0;
+                s_pending_photo_path[0] = '\0';
+                rt_kprintf("camera: pending question photo deleted\n");
+            }
+            s_total = result.total;
+            /* Nothing left to delete: leave delete mode instead of leaving an
+             * armed button over an empty album. */
+            if (s_total == 0U)
+                camera_ui_delete_disarm();
+            /* The last page can become empty: step back to the last page that
+             * still holds a photo. */
+            if (offset != 0U && offset >= s_total)
+                offset = s_total == 0U
+                             ? 0U
+                             : (s_total - 1U) / CAMERA_PAGE_SIZE * CAMERA_PAGE_SIZE;
+            s_after_page_status = CAMERA_UI_TEXT_DELETE_DONE;
+        }
+        else
+            s_after_page_status = CAMERA_UI_TEXT_DELETE_FAILED;
+        camera_ui_request_page(offset);
     }
     else if (result.status != 0)
     {
@@ -920,6 +1265,75 @@ static void camera_ui_rotate(void)
     camera_ui_update_controls();
 }
 
+static void camera_ui_voice_apply(camera_ui_voice_state_t state)
+{
+    if (s_voice_label == NULL || state == s_voice_state)
+        return;
+    s_voice_state = state;
+    lv_label_set_text(s_voice_label, s_voice_styles[state].text);
+    lv_obj_set_style_text_color(s_voice_label,
+                                lv_color_hex(s_voice_styles[state].text_color),
+                                LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_voice_widget,
+                              lv_color_hex(s_voice_styles[state].background),
+                              LV_PART_MAIN);
+}
+
+/* Link state for the status panel, talk state for the voice bar. Both are left
+ * alone while another view is on screen so the hidden home root never
+ * invalidates a region it does not own, and only a real change writes a label. */
+static void camera_ui_poll_status(void)
+{
+    learning_camera_status_t status;
+    camera_ui_voice_state_t voice;
+    char code[24];
+    char text[48];
+    int state;
+
+    if (s_view != CAMERA_VIEW_HOME)
+        return;
+    learning_camera_status_get(&status);
+    if (status.tts_playing)
+        s_voice_sent_tick = 0U;
+    if (status.listening)
+        voice = CAMERA_UI_VOICE_LISTENING;
+    else if (status.tts_playing)
+        voice = CAMERA_UI_VOICE_ANSWERING;
+    else if (s_voice_sent_tick != 0U &&
+             (rt_tick_t)(rt_tick_get() - s_voice_sent_tick) <
+                 rt_tick_from_millisecond(CAMERA_UI_VOICE_SENT_TIMEOUT_MS))
+        voice = CAMERA_UI_VOICE_SENT;
+    else if (s_voice_offline_tick != 0U &&
+             (rt_tick_t)(rt_tick_get() - s_voice_offline_tick) <
+                 rt_tick_from_millisecond(CAMERA_UI_VOICE_OFFLINE_TIMEOUT_MS))
+        voice = CAMERA_UI_VOICE_OFFLINE;
+    else
+        voice = CAMERA_UI_VOICE_IDLE;
+    camera_ui_voice_apply(voice);
+    if (s_xiaozhi_status == NULL)
+        return;
+    /* Two states only: a reconnect in flight keeps showing "not ready". While the
+     * device is unbound the panel shows the bind code instead, on one line, so it
+     * is visible without a serial console. */
+    state = status.ws_state == LEARNING_WS_READY ? 1 : 0;
+    if (ai_xiaozhi_activation_bind_code(code, sizeof(code)))
+        rt_snprintf(text, sizeof(text), "bind %s", code);
+    else
+        rt_snprintf(text, sizeof(text), "%s",
+                    state ? CAMERA_UI_TEXT_XIAOZHI_READY
+                          : CAMERA_UI_TEXT_XIAOZHI_OFFLINE);
+    if (rt_strcmp(s_xiaozhi_text, text) == 0)
+        return;
+    rt_strncpy(s_xiaozhi_text, text, sizeof(s_xiaozhi_text) - 1U);
+    s_xiaozhi_text[sizeof(s_xiaozhi_text) - 1U] = '\0';
+    lv_label_set_text(s_xiaozhi_status, s_xiaozhi_text);
+    lv_obj_set_style_text_color(
+        s_xiaozhi_status,
+        lv_color_hex(state ? CAMERA_UI_XIAOZHI_READY_COLOR
+                           : CAMERA_UI_XIAOZHI_OFFLINE_COLOR),
+        LV_PART_MAIN);
+}
+
 static void camera_ui_poll_keys(void)
 {
     camera_key_action_t action;
@@ -930,6 +1344,58 @@ static void camera_ui_poll_keys(void)
     {
         lv_obj_t *focused;
 
+        /* Talk is handled before the busy check: dropping a start would leave
+         * the matching stop without a session. */
+        if (action == CAMERA_KEY_TALK_START)
+        {
+            rt_tick_t now = rt_tick_get();
+
+            if (ai_xiaozhi_listen_start_request() != 0)
+            {
+                /* No session: say so at once, and remember it so the release
+                 * cannot report a question that was never recorded. */
+                s_talk_rejected = 1;
+                s_voice_offline_tick = now == 0U ? 1U : now;
+                rt_kprintf("camera: talk start rejected\n");
+            }
+            else
+            {
+                s_talk_rejected = 0;
+                rt_kprintf("camera: talk start\n");
+            }
+            continue;
+        }
+        if (action == CAMERA_KEY_TALK_STOP)
+        {
+            rt_tick_t now = rt_tick_get();
+
+            if (s_talk_rejected)
+            {
+                /* Nothing was recorded: keep the hint up instead of "sent". */
+                s_talk_rejected = 0;
+                s_voice_offline_tick = now == 0U ? 1U : now;
+                rt_kprintf("camera: talk stop without a session\n");
+                continue;
+            }
+            if (ai_xiaozhi_listen_stop_request() == 0)
+            {
+                /* Keeps the bar on "sent" until an answer starts instead of
+                 * dropping straight back to idle. */
+                s_voice_sent_tick = now == 0U ? 1U : now;
+                rt_kprintf("camera: talk stop\n");
+            }
+            else
+                rt_kprintf("camera: talk stop rejected\n");
+            continue;
+        }
+        /* Delete mode is left by BACK before BACK can mean "leave the album". */
+        if (s_delete_armed && s_view == CAMERA_VIEW_GALLERY &&
+            action == CAMERA_KEY_BACK)
+        {
+            camera_ui_delete_disarm();
+            camera_ui_status("");
+            continue;
+        }
         if (s_loading)
             continue;
         if (action == CAMERA_KEY_BACK)
@@ -1236,6 +1702,7 @@ static void camera_ui_thread(void *parameter)
         camera_ui_poll_keys();
         camera_ui_poll_capture();
         camera_ui_poll_media();
+        camera_ui_poll_status();
         if (s_refresh_home && !s_loading && s_view == CAMERA_VIEW_HOME)
         {
             s_refresh_home = 0;
@@ -1260,6 +1727,7 @@ int camera_ui_start(void)
 {
     rt_err_t result;
 
+    ai_xiaozhi_vision_set_photo_provider(camera_ui_pending_photo);
     if (s_thread != RT_NULL)
         return 0;
     s_thread = rt_thread_create("camera_ui", camera_ui_thread, RT_NULL,

@@ -5,6 +5,8 @@ cwd = GetCurrentDir()
 src = ['main.c', 'camera_sensor.c', 'camera_board.c', 'camera_service.c',
        'camera_epic.c', 'camera_cache.c', 'camera_keys.c', 'camera_ui.c', 'camera_ui_font.c', 'camera_image.c',
        'app_state.c', 'bt_pan_policy.c', 'audio_loopback.c',
+       'dma_channel_policy.c',
+       'learning_camera_status.c',
        'xiaozhi_activation.c', 'xiaozhi_activation_policy.c', 'xiaozhi_audio.c',
        'xiaozhi_audio_format.c', 'xiaozhi_protocol.c', 'xiaozhi_vision.c',
        'xiaozhi_websocket.c',
@@ -12,14 +14,14 @@ src = ['main.c', 'camera_sensor.c', 'camera_board.c', 'camera_service.c',
 
 link_flags = ['-Wl,--wrap=BSP_TP_PowerUp',
               '-Wl,--wrap=BSP_TP_PowerDown',
-              '-Wl,--wrap=BSP_TP_Reset']
+              '-Wl,--wrap=BSP_TP_Reset',
+              '-Wl,--wrap=HAL_DCMI_IRQHandler',
+              '-Wl,--wrap=HAL_DMA_Init']
 
 group = DefineGroup('Camera Application', src, depend=[''],
                     CPPDEFINES=['FRAME_BUFFER_IN_PSRAM'],
                     LINKFLAGS=link_flags,
                     CPPPATH=[cwd, os.path.join(cwd, 'photo_storage')])
-group.extend(SConscript(os.path.join(cwd, 'gc032a', 'jpeg', 'SConscript'),
-                        variant_dir='camera_jpeg', duplicate=0))
 group.extend(SConscript(os.path.join(cwd, 'photo_storage', 'SConscript'),
                         variant_dir='photo_storage', duplicate=0))
 group.extend(SConscript(os.path.join(cwd, 'vendor', 'camera_tjpgd', 'SConscript'),

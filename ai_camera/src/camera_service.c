@@ -2,6 +2,7 @@
 #include "camera_service.h"
 
 #include <bf0_hal.h>
+#include <finsh.h>
 #include <mem_section.h>
 #include <rtthread.h>
 #include <rthw.h>
@@ -10,14 +11,13 @@
 #include "camera_image.h"
 #include "camera_sensor.h"
 
-#if defined(SOC_SF32LB57X) && defined(BSP_USING_DCMI)
-#include <drv_dcmi.h>
-#if defined(BSP_USING_LCD) && defined(BSP_USING_LCDC) && \
+/* The camera framework's DCMI backend keeps its DMA handle private, so only
+ * the LCD controller assignment is still observable from the application. */
+#if defined(SOC_SF32LB57X) && defined(BSP_USING_LCD) && defined(BSP_USING_LCDC) && \
     defined(BSP_LCDC_USING_DPI) && defined(HAL_RAMLESS_LCD_ENABLED) && \
     defined(DMA_SUPPORT_DYN_CHANNEL_ALLOC)
 #define CAMERA_LOG_LCD_DMA
 extern LCDC_HandleTypeDef *get_drv_lcd_handler(void);
-#endif
 #endif
 
 #define CAMERA_FRAME_BYTES (CAMERA_LIVE_WIDTH * CAMERA_LIVE_HEIGHT * 2U)
@@ -120,7 +120,7 @@ static struct
     int active;
 } s_fps;
 
-#if defined(SOC_SF32LB57X) && defined(BSP_USING_DCMI)
+#ifdef CAMERA_LOG_LCD_DMA
 typedef struct
 {
     uint32_t instance;
@@ -148,43 +148,25 @@ static void camera_snapshot_dma(camera_dma_snapshot_t *snapshot,
 
 static void camera_log_dma_assignment(void)
 {
-    struct rt_dcmi_device *dcmi = rt_get_dcmi_device();
-    camera_dma_snapshot_t capture = {0};
-    uint32_t dma_cr = 0U;
-    rt_base_t level;
-#ifdef CAMERA_LOG_LCD_DMA
     LCDC_HandleTypeDef *lcd = get_drv_lcd_handler();
     camera_dma_snapshot_t display = {0};
     uint32_t lcd_running = 0U;
-#endif
+    rt_base_t level;
 
     level = rt_hw_interrupt_disable();
-    camera_snapshot_dma(&capture, &dcmi->hdma,
-                         dcmi->hdma.State == HAL_DMA_STATE_BUSY);
-    if (dcmi->handle.Instance != RT_NULL)
-        dma_cr = dcmi->handle.Instance->DMA_CR;
-#ifdef CAMERA_LOG_LCD_DMA
     if (lcd != RT_NULL)
     {
         lcd_running = lcd->running;
         /* DPI reserves a DMA channel directly; its handle can stay READY. */
         camera_snapshot_dma(&display, &lcd->hdma_handle, lcd_running != 0U);
     }
-#endif
     rt_hw_interrupt_enable(level);
 
-    rt_kprintf("camera.dma: dcmi instance=%08lx dma1_ch=%lu state=%lu index=%lu "
-               "ccr=%08lx dma_cr=%08lx\n",
-               (unsigned long)capture.instance, (unsigned long)capture.channel,
-               (unsigned long)capture.state, (unsigned long)capture.index,
-               (unsigned long)capture.ccr, (unsigned long)dma_cr);
-#ifdef CAMERA_LOG_LCD_DMA
     rt_kprintf("camera.dma: lcd instance=%08lx dma1_ch=%lu state=%lu index=%lu "
                "ccr=%08lx running=%lu\n",
                (unsigned long)display.instance, (unsigned long)display.channel,
                (unsigned long)display.state, (unsigned long)display.index,
                (unsigned long)display.ccr, (unsigned long)lcd_running);
-#endif
 }
 #endif
 
@@ -600,7 +582,7 @@ static void camera_stream_worker(void *parameter)
             if (streaming)
                 rt_kprintf("camera.stream: mode=continuous_direct buffers=2 frame_bytes=%lu\n",
                            (unsigned long)CAMERA_FRAME_BYTES);
-#if defined(SOC_SF32LB57X) && defined(BSP_USING_DCMI)
+#ifdef CAMERA_LOG_LCD_DMA
             if (streaming)
                 camera_log_dma_assignment();
 #endif
@@ -836,6 +818,25 @@ static void camera_media_rotate(camera_media_result_t *result)
                (unsigned int)degrees, result->status);
 }
 
+static void camera_media_delete(camera_media_result_t *result, uint32_t offset)
+{
+    photo_store_info_t deleted;
+    size_t written = 0U;
+    uint32_t total = 0U;
+
+    result->status = photo_store_delete_at(offset, &deleted);
+    if (result->status == 0)
+    {
+        result->items[0] = deleted;
+        result->count = 1U;
+    }
+    /* The album size after the removal lets the UI clamp its page offset. */
+    if (photo_store_list(0U, RT_NULL, 0U, &written, &total) == 0)
+        result->total = total;
+    rt_kprintf("camera.delete: offset=%u status=%d left=%u\n",
+               (unsigned int)offset, result->status, (unsigned int)result->total);
+}
+
 static void camera_media_worker(void *parameter)
 {
     (void)parameter;
@@ -880,6 +881,10 @@ static void camera_media_worker(void *parameter)
         else if (request.kind == CAMERA_MEDIA_ROTATE)
         {
             camera_media_rotate(&s_result);
+        }
+        else if (request.kind == CAMERA_MEDIA_DELETE)
+        {
+            camera_media_delete(&s_result, request.offset);
         }
         else if (request.kind == CAMERA_MEDIA_PAGE)
         {
@@ -989,6 +994,7 @@ void camera_service_record_displayed(void)
 
 void camera_service_report_fps(void)
 {
+#ifdef LEARNING_CAMERA_FPS_LOG
     rt_tick_t now;
     rt_tick_t elapsed;
     uint32_t received;
@@ -1029,6 +1035,7 @@ void camera_service_report_fps(void)
                (unsigned long)(displayed_x10 / 10U), (unsigned long)(displayed_x10 % 10U),
                (unsigned long)received, (unsigned long)published, (unsigned long)displayed,
                (unsigned long)window_ms);
+#endif /* LEARNING_CAMERA_FPS_LOG */
 }
 
 int camera_service_take_frame(camera_live_frame_t *frame)
@@ -1193,6 +1200,15 @@ int camera_service_request_photo_at(uint32_t offset, uint32_t token)
     return camera_submit(&request);
 }
 
+int camera_service_request_delete(uint32_t offset, uint32_t token)
+{
+    camera_request_t request = {0};
+    request.kind = CAMERA_MEDIA_DELETE;
+    request.offset = offset;
+    request.token = token;
+    return camera_submit(&request);
+}
+
 int camera_service_poll_result(camera_media_result_t *result)
 {
     if (!s_started || result == RT_NULL)
@@ -1220,3 +1236,19 @@ int camera_service_camera_status(void)
     rt_mutex_release(s_lock);
     return status;
 }
+
+/* Diagnostic: the DCMI backend and the audio TX ask for the same preferred DMA
+ * channel, so the console needs a way to stop the live preview and see whether
+ * the other peripheral behaves differently without it. */
+static void camera_live_command(int argc, char **argv)
+{
+    if (argc != 2 || (strcmp(argv[1], "on") != 0 && strcmp(argv[1], "off") != 0))
+    {
+        rt_kprintf("usage: camera_live <on|off>\n");
+        return;
+    }
+    camera_service_set_live(strcmp(argv[1], "on") == 0);
+    rt_kprintf("camera: live %s\n", argv[1]);
+}
+MSH_CMD_EXPORT_ALIAS(camera_live_command, camera_live,
+                     Stop or start the live preview);

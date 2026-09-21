@@ -9,6 +9,12 @@
 #define CAMERA_KEYS_GROUP       0
 #define CAMERA_KEYS_COUNT       3
 #define CAMERA_KEYS_QUEUE_SIZE  16
+#define CAMERA_KEYS_CONFIRM_KEY 2
+/* The driver reports BUTTON_LONG_PRESSED only after
+ * BUTTON_ADV_ACTION_CHECK_DELAY, which the board configures as 3000 ms. That
+ * is far too long to open the microphone, so talk uses its own hold timer,
+ * which also keeps the 3 s threshold untouched for BACK in the gallery. */
+#define CAMERA_KEYS_TALK_HOLD_MS 250U
 
 static camera_key_action_t s_actions[CAMERA_KEYS_QUEUE_SIZE];
 static unsigned int s_head;
@@ -19,6 +25,9 @@ static int32_t s_pressed_key = -1;
 static rt_bool_t s_confirm_handled;
 static rt_bool_t s_enabled;
 static rt_bool_t s_starting;
+static rt_timer_t s_talk_timer;
+static volatile rt_bool_t s_talk_enabled;
+static rt_bool_t s_talk_active;
 
 /* The queue and press state are accessed with interrupts disabled. */
 static void camera_keys_reset(void)
@@ -28,6 +37,7 @@ static void camera_keys_reset(void)
     s_count = 0;
     s_pressed_key = -1;
     s_confirm_handled = RT_FALSE;
+    s_talk_active = RT_FALSE;
 }
 
 static void camera_keys_enqueue(camera_key_action_t action)
@@ -63,12 +73,29 @@ static void camera_keys_adc_handler(uint8_t group, int32_t key,
             camera_keys_enqueue(CAMERA_KEY_PREVIOUS);
         else if (key == 1)
             camera_keys_enqueue(CAMERA_KEY_NEXT);
+        else if (s_talk_enabled && s_talk_timer != RT_NULL)
+            rt_timer_start(s_talk_timer);
         break;
     case BUTTON_CLICKED:
     case BUTTON_LONG_PRESSED:
-        if (key == 2 && s_pressed_key == key && !s_confirm_handled)
+        if (key == CAMERA_KEYS_CONFIRM_KEY && s_pressed_key == key)
         {
+            /* The hold already opened the microphone: this press is a talk, so
+             * do not turn it into a confirm or a back as well. */
+            if (s_talk_active)
+                break;
+            if (s_confirm_handled)
+                break;
             s_confirm_handled = RT_TRUE;
+            if (action == BUTTON_LONG_PRESSED && s_talk_enabled)
+            {
+                /* Fallback for a hold the talk timer missed. */
+                if (s_talk_timer != RT_NULL)
+                    rt_timer_stop(s_talk_timer);
+                s_talk_active = RT_TRUE;
+                camera_keys_enqueue(CAMERA_KEY_TALK_START);
+                break;
+            }
             camera_keys_enqueue(action == BUTTON_LONG_PRESSED ?
                                 CAMERA_KEY_BACK : CAMERA_KEY_CONFIRM);
         }
@@ -78,10 +105,35 @@ static void camera_keys_adc_handler(uint8_t group, int32_t key,
         {
             s_pressed_key = -1;
             s_confirm_handled = RT_FALSE;
+            if (s_talk_timer != RT_NULL)
+                rt_timer_stop(s_talk_timer);
+            /* Release ends a talk even if the view disabled talk meanwhile. */
+            if (s_talk_active)
+            {
+                s_talk_active = RT_FALSE;
+                camera_keys_enqueue(CAMERA_KEY_TALK_STOP);
+            }
         }
         break;
     default:
         break;
+    }
+    rt_hw_interrupt_enable(level);
+}
+
+/* Runs in the timer thread: a press held for the talk threshold becomes a talk
+ * request, a shorter press is left to the driver's click handling. */
+static void camera_keys_talk_timer(void *parameter)
+{
+    rt_base_t level;
+
+    (void)parameter;
+    level = rt_hw_interrupt_disable();
+    if (s_enabled && s_talk_enabled && !s_talk_active &&
+        s_pressed_key == CAMERA_KEYS_CONFIRM_KEY)
+    {
+        s_talk_active = RT_TRUE;
+        camera_keys_enqueue(CAMERA_KEY_TALK_START);
     }
     rt_hw_interrupt_enable(level);
 }
@@ -124,6 +176,20 @@ int camera_keys_start(void)
     {
         result = -EINVAL;
         goto failed;
+    }
+    if (s_talk_timer == RT_NULL)
+    {
+        s_talk_timer = rt_timer_create("cam_talk", camera_keys_talk_timer,
+                                       RT_NULL,
+                                       rt_tick_from_millisecond(
+                                           CAMERA_KEYS_TALK_HOLD_MS),
+                                       RT_TIMER_FLAG_ONE_SHOT |
+                                           RT_TIMER_FLAG_SOFT_TIMER);
+        if (s_talk_timer == RT_NULL)
+        {
+            result = -ENOMEM;
+            goto failed;
+        }
     }
     if (rt_device_find(ADC_BUTTON_ADC_DEV_NAME) == RT_NULL)
     {
@@ -175,6 +241,18 @@ failed:
     s_starting = RT_FALSE;
     rt_hw_interrupt_enable(level);
     return result;
+}
+
+void camera_keys_set_talk_enabled(int enabled)
+{
+    rt_base_t level = rt_hw_interrupt_disable();
+
+    s_talk_enabled = enabled ? RT_TRUE : RT_FALSE;
+    /* Only stops a hold from starting a talk; a running talk still ends on
+     * release so the microphone cannot be left open. */
+    if (!s_talk_enabled && s_talk_timer != RT_NULL)
+        rt_timer_stop(s_talk_timer);
+    rt_hw_interrupt_enable(level);
 }
 
 int camera_keys_poll(camera_key_action_t *action)

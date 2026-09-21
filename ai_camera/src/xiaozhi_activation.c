@@ -88,6 +88,35 @@ int ai_xiaozhi_get_identity(char *device_id, size_t device_id_size,
     return 0;
 }
 
+/* Last activation answer, kept so the sidebar panel can show the bind code. The
+ * writer is the connect worker and the reader is the UI thread; the code is
+ * written before the valid flag, so a torn read can only show the older code. */
+static char s_bind_code[AI_XIAOZHI_ACTIVATION_CODE_MAX];
+static volatile int s_bind_code_valid;
+
+int ai_xiaozhi_activation_bind_code(char *buffer, size_t size)
+{
+    if (buffer == RT_NULL || size == 0U || !s_bind_code_valid)
+        return 0;
+    rt_strncpy(buffer, s_bind_code, size - 1U);
+    buffer[size - 1U] = '\0';
+    return s_bind_code[0] != '\0';
+}
+
+/* Pending activation means unbound: cache the code, or drop the old one when the
+ * device is bound (or the answer carried no code). */
+static void ai_xiaozhi_activation_remember(
+    const ai_xiaozhi_activation_t *activation)
+{
+    const char *code = activation->activation_pending
+                           ? activation->activation_code : "";
+
+    s_bind_code_valid = 0;
+    rt_strncpy(s_bind_code, code, sizeof(s_bind_code) - 1U);
+    s_bind_code[sizeof(s_bind_code) - 1U] = '\0';
+    s_bind_code_valid = 1;
+}
+
 int ai_xiaozhi_fetch_activation(ai_xiaozhi_activation_t *activation)
 {
     char device_id[AI_XIAOZHI_DEVICE_ID_MAX];
@@ -164,6 +193,8 @@ int ai_xiaozhi_fetch_activation(ai_xiaozhi_activation_t *activation)
     if (result < 0)
         rt_kprintf("xiaozhi: activation response schema invalid (%u bytes)\n",
                    (unsigned int)response_length);
+    else
+        ai_xiaozhi_activation_remember(activation);
 done:
     if (response != RT_NULL)
         web_free(response);

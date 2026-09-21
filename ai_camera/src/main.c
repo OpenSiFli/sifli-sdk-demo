@@ -3,6 +3,7 @@
 #include <rtdevice.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ulog.h>
 
 #include <lwip/ip_addr.h>
 #include <netdev.h>
@@ -16,6 +17,7 @@
 #include "bts2_app_inc.h"
 #include "camera_service.h"
 #include "camera_ui.h"
+#include "learning_camera_status.h"
 #include "xiaozhi_websocket.h"
 
 // 376057
@@ -23,6 +25,9 @@
 #define APP_QUEUE_DEPTH 16U
 #define APP_IP_POLL_MS 200U
 #define APP_BT_READY_TIMEOUT_MS 30000U
+#define APP_XIAOZHI_RETRY_MS 2000U
+#define APP_XIAOZHI_RETRY_MAX_MS 30000U
+#define APP_XIAOZHI_RETRY_SHIFT_MAX 4U
 
 typedef struct
 {
@@ -34,11 +39,15 @@ static rt_sem_t s_bt_ready;
 static rt_timer_t s_connect_timer;
 static rt_timer_t s_ip_timer;
 static rt_timer_t s_retry_timer;
+static rt_timer_t s_xiaozhi_timer;
 static bt_notify_device_mac_t s_peer;
 static rt_bool_t s_peer_valid;
 static unsigned int s_retry_count;
 static unsigned int s_ip_poll_count;
+static unsigned int s_xiaozhi_retry;
 static app_state_t s_state = APP_BOOT;
+
+static void app_post(app_message_type_t type);
 
 static void app_xiaozhi_event(ai_xiaozhi_event_t event, void *context)
 {
@@ -47,17 +56,25 @@ static void app_xiaozhi_event(ai_xiaozhi_event_t event, void *context)
     {
     case AI_XIAOZHI_EVENT_READY:
         rt_kprintf("xiaozhi: session ready\n");
+        app_post(APP_MESSAGE_XIAOZHI_UP);
         break;
     case AI_XIAOZHI_EVENT_DISCONNECTED:
+        learning_camera_status_set_tts_playing(0);
         rt_kprintf("xiaozhi: session disconnected\n");
+        app_post(APP_MESSAGE_XIAOZHI_DOWN);
         break;
     case AI_XIAOZHI_EVENT_ERROR:
         rt_kprintf("xiaozhi: session error\n");
+
+        if (!ai_xiaozhi_websocket_is_active())
+            app_post(APP_MESSAGE_XIAOZHI_DOWN);
         break;
     case AI_XIAOZHI_EVENT_TTS_START:
+        learning_camera_status_set_tts_playing(1);
         rt_kprintf("xiaozhi: TTS start\n");
         break;
     case AI_XIAOZHI_EVENT_TTS_STOP:
+        learning_camera_status_set_tts_playing(0);
         rt_kprintf("xiaozhi: TTS stop\n");
         break;
     default:
@@ -154,6 +171,44 @@ static void app_retry_timer(void *parameter)
     app_post(APP_MESSAGE_RETRY_PAN);
 }
 
+static void app_xiaozhi_timer(void *parameter)
+{
+    (void)parameter;
+    app_post(APP_MESSAGE_XIAOZHI_RETRY);
+}
+
+static void app_schedule_xiaozhi_retry(void)
+{
+    learning_camera_status_t status;
+    unsigned int shift = s_xiaozhi_retry < APP_XIAOZHI_RETRY_SHIFT_MAX
+                             ? s_xiaozhi_retry : APP_XIAOZHI_RETRY_SHIFT_MAX;
+    uint32_t delay = APP_XIAOZHI_RETRY_MS << shift;
+    rt_tick_t ticks;
+
+    learning_camera_status_get(&status);
+    if (!ai_xiaozhi_session_enabled())
+    {
+        /* The user switched the session off from the sidebar panel. */
+        rt_kprintf("xiaozhi: session off, retry disabled\n");
+        return;
+    }
+    if (!status.pan_connected || !status.has_ip)
+    {
+        /* The PAN path owns its own retry; there is nothing to talk to yet. */
+        rt_kprintf("xiaozhi: session down, network not ready\n");
+        return;
+    }
+    if (delay > APP_XIAOZHI_RETRY_MAX_MS)
+        delay = APP_XIAOZHI_RETRY_MAX_MS;
+    if (s_xiaozhi_retry < APP_XIAOZHI_RETRY_SHIFT_MAX)
+        ++s_xiaozhi_retry;
+    ticks = rt_tick_from_millisecond(delay);
+    rt_timer_stop(s_xiaozhi_timer);
+    rt_timer_control(s_xiaozhi_timer, RT_TIMER_CTRL_SET_TIME, &ticks);
+    rt_timer_start(s_xiaozhi_timer);
+    rt_kprintf("xiaozhi: reconnect in %u ms\n", (unsigned int)delay);
+}
+
 static int app_ip_ready(void)
 {
     struct netdev *netdev = netdev_get_by_name("b0");
@@ -206,6 +261,7 @@ static void app_handle_message(const app_message_t *message)
     case APP_MESSAGE_PAN_UP:
         s_ip_poll_count = 0U;
         rt_timer_start(s_ip_timer);
+        learning_camera_status_set_pan_connected(1);
         rt_kprintf("xiaozhi: PAN profile connected, waiting for DHCP\n");
         break;
     case APP_MESSAGE_IP_POLL:
@@ -214,11 +270,13 @@ static void app_handle_message(const app_message_t *message)
             rt_timer_stop(s_ip_timer);
             s_retry_count = 0U;
             s_state = app_state_next(s_state, APP_EVENT_PAN_READY);
+            learning_camera_status_set_pan_connected(1);
+            learning_camera_status_set_has_ip(1);
             rt_kprintf("xiaozhi: PAN ready, b0 has IPv4\n");
             /* The reference build starts the session from its assistant UI.
              * Without that UI the request is issued as soon as the network
              * is usable; listening is still controlled from the console. */
-            if (ai_xiaozhi_connect_async() < 0)
+            if (ai_xiaozhi_session_enabled() && ai_xiaozhi_connect_async() < 0)
                 rt_kprintf("xiaozhi: connect request failed\n");
         }
         else if (++s_ip_poll_count >=
@@ -231,8 +289,23 @@ static void app_handle_message(const app_message_t *message)
     case APP_MESSAGE_PAN_DOWN:
         rt_timer_stop(s_connect_timer);
         rt_timer_stop(s_ip_timer);
+        learning_camera_status_set_pan_connected(0);
         s_state = app_state_next(s_state, APP_EVENT_PAN_DOWN);
         app_start_retry();
+        break;
+    case APP_MESSAGE_XIAOZHI_UP:
+        s_xiaozhi_retry = 0U;
+        break;
+    case APP_MESSAGE_XIAOZHI_DOWN:
+        if (!ai_xiaozhi_websocket_is_active())
+            app_schedule_xiaozhi_retry();
+        break;
+    case APP_MESSAGE_XIAOZHI_RETRY:
+        if (!ai_xiaozhi_session_enabled())
+            break;
+        rt_kprintf("xiaozhi: reconnect attempt %u\n", s_xiaozhi_retry);
+        if (ai_xiaozhi_connect_async() < 0)
+            rt_kprintf("xiaozhi: reconnect request failed\n");
         break;
     default:
         break;
@@ -300,6 +373,12 @@ int main(void)
     app_message_t message;
     int result;
 
+#ifdef ULOG_USING_FILTER
+    /* The Bluetooth PAN glue logs one debug line per received TCP segment, which
+     * drowns the console while an image is uploading. */
+    ulog_tag_lvl_filter_set("BT.lwip", LOG_LVL_INFO);
+#endif
+
     s_queue = rt_mq_create("xz_event", sizeof(message), APP_QUEUE_DEPTH,
                            RT_IPC_FLAG_FIFO);
     if (s_queue == RT_NULL)
@@ -319,8 +398,11 @@ int main(void)
                                     rt_tick_from_millisecond(
                                         LEARNING_CAMERA_PAN_RETRY_DELAY_MS),
                                     RT_TIMER_FLAG_ONE_SHOT | RT_TIMER_FLAG_SOFT_TIMER);
+    s_xiaozhi_timer = rt_timer_create("xz_ws", app_xiaozhi_timer, RT_NULL,
+                                      rt_tick_from_millisecond(APP_XIAOZHI_RETRY_MS),
+                                      RT_TIMER_FLAG_ONE_SHOT | RT_TIMER_FLAG_SOFT_TIMER);
     if (s_connect_timer == RT_NULL || s_ip_timer == RT_NULL ||
-        s_retry_timer == RT_NULL)
+        s_retry_timer == RT_NULL || s_xiaozhi_timer == RT_NULL)
         return -RT_ENOMEM;
 
     ai_xiaozhi_set_event_callback(app_xiaozhi_event, RT_NULL);
@@ -360,3 +442,4 @@ int main(void)
     return 0;
 }
 
+// ai_xiaozhi_vision_upload /photo/photo_0000000012.jpg

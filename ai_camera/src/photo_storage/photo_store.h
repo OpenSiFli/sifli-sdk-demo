@@ -39,11 +39,8 @@ int photo_store_list(uint32_t offset, photo_store_info_t *items, size_t capacity
                      size_t *written, uint32_t *total);
 int photo_store_save_jpeg(const void *data, size_t size, photo_store_info_t *info);
 
-/* Rotation is 0 or 180 degrees. No stored record loads 0 successfully. A valid
- * older record survives a corrupt/incomplete newer one. No valid record among
- * existing files returns -EIO; other storage failures return negative errno.
- * Failed loads leave *degrees at 0. Save returns 0 only after committing the
- * synchronized record; space reclamation follows the photo retention policy. */
+int photo_store_delete_at(uint32_t offset, photo_store_info_t *deleted);
+
 int photo_store_load_rotation(uint16_t *degrees);
 int photo_store_save_rotation(uint16_t degrees);
 

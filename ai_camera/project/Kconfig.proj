@@ -21,6 +21,18 @@ config LEARNING_CAMERA_PAN_RETRY_MAX
 
 endmenu
 
+menu "Assistant UI diagnostics"
+
+config LEARNING_CAMERA_UI_LOG
+    bool "Camera UI timing and redraw diagnostics"
+    default y
+
+config LEARNING_CAMERA_FPS_LOG
+    bool "Camera fps diagnostics"
+    default y
+
+endmenu
+
 config CUSTOM_MEM_MAP
     bool
     select custom_mem_map

@@ -3,7 +3,7 @@
 #include <drv_io.h>
 #include <rtconfig.h>
 
-#if !defined(BSP_USING_BOARD_DPI_HDK_LB575YBBN6_N16_QSPI) || \
+#if !defined(BSP_USING_BOARD_DPI_HDK_LB57EYBBN6_N16_QSPI) || \
     !defined(BOARD_DVP_PINMAP_0) || \
     !defined(LCD_USING_HTM_H070A20_RGB_A01)
 #error "camera_board.c requires the HTM DPI board with DCMI pinmap 0"

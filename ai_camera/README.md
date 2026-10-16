@@ -4,12 +4,12 @@
 
 除了原有的实时预览、拍照保存与本地图库，工程在顶层实现了完整的“拍学机”体验：**拍一张照片 → 按住按键提问 → 松手把“这张照片 + 这句话”一起发给小智 → 屏幕显示回答状态并从扬声器念出来**。相机框架与 SDK 不参与这部分改动，新增能力都在 `src/` 的顶层模块里。
 
-构建使用兼容板型 `dpi-hdk_lb575ybbn6_n16_qspi_hcpu`，屏幕型号为 `HTM_H070A20_RGB_A01`。工程按 NOR 前 8 MiB 配置容量和分区。
+构建使用兼容板型 `dpi-hdk_lb57eybbn6_n16_qspi`，屏幕型号为 `HTM_H070A20_RGB_A01`。工程按 NOR 前 8 MiB 配置容量和分区。
 
 ## 快速上手
 
 ### 1. 硬件环境
-![硬件接线图](hardware.png)
+![硬件接线图](assets/hardware.png)
 
 ### 2. 软件环境
 
@@ -28,7 +28,7 @@ $env:SIFLI_SDK_TOOLS_PATH = "d:\SiFli\Toolain"
 . <SDK 目录>\export.ps1
 $env:SIFLI_PERIPHERALS_ROOT = '<SiFli-SDK-Peripherals 目录>'
 Set-Location <本工程>\project
-scons --board=dpi-hdk_lb575ybbn6_n16_qspi_hcpu -j8
+scons --board=dpi-hdk_lb57eybbn6_n16_qspi -j8
 ```
 
 判断成功的标志是最后一行 `scons: done building targets.`。构建输出很长，建议重定向到文件后再检视；`project/build_<board>/main.map` 可以看到每个源文件是否真的进了镜像。
@@ -40,13 +40,14 @@ Set-Location <本工程>\project\build_dpi-hdk_lb575ybbn6_n16_qspi_hcpu
 .\download.bat
 ```
 ### 5. 上手体验
-
-1. 开机后左侧是 800×600 实时预览，右侧是操作栏，默认焦点在“拍摄”。
-2. 短按键 3 拍照 → 预览区显示“拍摄中.../保存中.../加载中...” → 状态显示“已保存”，侧栏出现**黄框的“待提问照片”**。
-3. **按住键 3 不放**（约 0.3 秒）→ 语音条显示 `listening`，对着麦克风提问（如“这是什么？”）→ **松手** → 语音条显示 `sent`，照片和这句话一起发给小智。
-4. 小智回答时语音条显示 `answering`，答案文本上屏并**从扬声器念出**。
-5. 看图：焦点移到“打开图库”→ 键 3 进入 → 键 1/键 2 移动焦点 → 键 3 看大图；大图里键 1/键 2 翻页，键 3 返回。
-6. 删图：图库页焦点移到 `delete` → 键 3 → 按钮变红、提示 `tap a photo` → 选中缩略图即删除；再按一次 `delete` 或长按键 3 退出。
+1. **首次开机并建立bt pan连接时**需要绑定设备才可以访问设备，我们需要登录[xiaozhi](https://xiaozhi.me/console/agents)，然后点击添加设备，输入下图中显示的6位验证码:
+![6位验证码图](assets/bind.png)
+2. 开机后左侧是 800×600 实时预览，右侧是操作栏，默认焦点在“拍摄”。
+3. 短按键 3 拍照 → 预览区显示“拍摄中.../保存中.../加载中...” → 状态显示“已保存”，侧栏出现**黄框的“待提问照片”**。
+4. **按住键 3 不放**（约 0.3 秒）→ 语音条显示 `listening`，对着麦克风提问（如“这是什么？”）→ **松手** → 语音条显示 `sent`，照片和这句话一起发给小智。
+5. 小智回答时语音条显示 `answering`，答案文本上屏并**从扬声器念出**。
+6. 看图：焦点移到“打开图库”→ 键 3 进入 → 键 1/键 2 移动焦点 → 键 3 看大图；大图里键 1/键 2 翻页，键 3 返回。
+7. 删图：图库页焦点移到 `delete` → 键 3 → 按钮变红、提示 `tap a photo` → 选中缩略图即删除；再按一次 `delete` 或长按键 3 退出。
 
 ## 相关问题
 1. 照片什么时候会发出去？发的是哪一张？
@@ -69,3 +70,8 @@ Set-Location <本工程>\project\build_dpi-hdk_lb575ybbn6_n16_qspi_hcpu
 
 3. xiaozhi一直显示未就绪怎么办？
 先用手机连接，手机显示已连接，再复位板子，板子会自动连接。
+
+4. 为何反复报 `mbedtls_ssl_setup error, return -0x7f00` 并一直重连？
+`-0x7f00` 是 mbedtls 的 `MBEDTLS_ERR_SSL_ALLOC_FAILED`：HTTPS 握手要一次性分配到两个约 16.7 KB 的收发缓冲，而 HCPU 的 `rt_malloc` 堆已被占满。
+本板 512 KB HPSYS RAM 原先在 `project/dpi-hdk_lb57eybbn6_n16_qspi_hcpu/ptab.json` 里被切成 HCPU `0x6FC00` + ACPU `0xFC00`，而本工程 `CONFIG_BSP_USING_ACPU` 未开启、不跑 ACPU 镜像，那 63 KB 是白留的；现已把 ACPU 段并给 HCPU（`HCPU_RAM_DATA` = `0x7F700`，即 512K − 2K mailbox − 256B custom config），可分配堆由约 260 KB 增至约 325 KB。
+验证：开机 `list_mem` 的 `total memory` 应为 ~324,8xx。若仍是 ~260 KB，说明 `ptab.h` 没重新生成，删掉 `project/build_<board>/ptab.h` 后再编译一次。

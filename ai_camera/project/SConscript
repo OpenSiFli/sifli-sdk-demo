@@ -7,8 +7,9 @@ objs = SConscript(os.path.join(SIFLI_SDK, 'SConscript'),
                   variant_dir='sifli_sdk', duplicate=0)
 objs.extend(SConscript(os.path.join(cwd, '../src/SConscript'),
                        variant_dir='src', duplicate=0))
-camera_root = os.path.join(os.environ['SIFLI_PERIPHERALS_ROOT'], 'camera_framework')
-objs.extend(SConscript(os.path.join(camera_root, 'SConscript'),
-                       variant_dir='camera_framework', duplicate=0))
+# libcamera (the camera framework) is an external component declared in
+# sf-pkg.yaml; building.py's AddExternalComponents() SConscripts it from
+# sf-pkgs/SConscript_conandeps, exactly like libzip/libepub, so nothing has to
+# be added here.
 Return('objs')
 

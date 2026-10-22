@@ -14,9 +14,10 @@
 ### 2. 软件环境
 
 - 安装 [SiFli SDK](https://github.com/OpenSiFli/SiFli-SDK-Peripherals) 与 SDK（本项目基于 SDK main），并设置环境变量 `SIFLI_SDK_TOOLS_PATH`。
-- 准备外置外设库，并把路径写进 `SIFLI_PERIPHERALS_ROOT`：工程通过它引用 `SiFli-SDK-Peripherals/camera_framework` 的 Kconfig 和 SCons 入口。
+- 摄像头框架按 **sf-pkg 组件** 引入（`libcamera/0.0.1@sifli`，声明在 `project/sf-pkg.yaml`），不再需要 `SIFLI_PERIPHERALS_ROOT`。它和 `libzip`、`libepub` 一样由 conan 安装到 `project/sf-pkgs/full_deploy/host/`，再由构建自动生成 `sf-pkgs/SConscript_conandeps` 与 `sf-pkgs/Kconfig.conandeps`。
+- 由于 `libcamera` 目前还不是从组件库拉取的（`project/sf-pkgs/full_deploy/host/libcamera/0.0.1/` 是本地目录），首次编译前要把它作为本地包注册进 conan 缓存（只做一次；改了相机框架源码后重跑一次即可）：
 ```powershell
-$env:SIFLI_PERIPHERALS_ROOT = '{YOUR_PERIPHERALS_PATH}/SiFli-SDK-Peripherals' 
+conan create project\sf-pkgs\full_deploy\host\libcamera\0.0.1
 ```
 
 ### 3. 编译
@@ -26,7 +27,6 @@ $env:SIFLI_PERIPHERALS_ROOT = '{YOUR_PERIPHERALS_PATH}/SiFli-SDK-Peripherals'
 ```powershell
 $env:SIFLI_SDK_TOOLS_PATH = "d:\SiFli\Toolain"
 . <SDK 目录>\export.ps1
-$env:SIFLI_PERIPHERALS_ROOT = '<SiFli-SDK-Peripherals 目录>'
 Set-Location <本工程>\project
 scons --board=dpi-hdk_lb57eybbn6_n16_qspi -j8
 ```

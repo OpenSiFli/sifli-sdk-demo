@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: MIT */
 #include <acpu_ctrl.h>
-#include <cpu_usage_profiler.h>
 #include <rtthread.h>
 #include <string.h>
 
@@ -14,6 +13,8 @@
 #if defined(CAMERA_SW_ACPU_JPEG_DECODER)
 #include "camera_sw_jpeg_decoder.h"
 #endif
+#include <cpu_usage_profiler.h>
+#include <msh.h>
 
 #define CAMERA_SW_ACPU_JPEG_DECODE_WORK_SIZE 16384U
 #define CAMERA_SW_ACPU_JPEG_DECODE_MAX_WIDTH 640U
@@ -57,6 +58,67 @@ static size_t camera_sw_acpu_jpeg_read(void *context, uint8_t *buffer,
 static uint32_t camera_sw_acpu_now_ms(void)
 {
     return (uint32_t)(rt_tick_get() * 1000U / RT_TICK_PER_SECOND);
+}
+
+static uint32_t camera_sw_acpu_window_start_ms;
+static uint32_t camera_sw_acpu_window_busy_ms;
+
+static void camera_sw_acpu_account(uint32_t started_ms)
+{
+    uint32_t now = camera_sw_acpu_now_ms();
+    uint32_t from = started_ms;
+
+    if (camera_sw_acpu_window_start_ms == 0U)
+        camera_sw_acpu_window_start_ms = started_ms;
+    if (from < camera_sw_acpu_window_start_ms)
+        from = camera_sw_acpu_window_start_ms;
+    if (now > from)
+        camera_sw_acpu_window_busy_ms += now - from;
+}
+
+/*
+ * The ACPU load comes from the same cpu_usage_profiler middleware the HCPU
+ * uses: the share of the core spent outside its idle thread. cpu_get_usage()
+ * only changes when the profiler is settled, and cpu_prof_reset is exported as
+ * the "cpu_prof_reset" console command, so the settle goes through msh_exec -
+ * exactly the call the HCPU app makes for its own profiler, which keeps both
+ * percentages bounded by the query that reads them.
+ *
+ * Both options are hard requirements here: without USING_CPU_USAGE_PROFILER,
+ * cpu_usage_profiler.h compiles cpu_get_usage() into a constant 0 (a silent
+ * 0% reading), and without FINSH_USING_MSH the settle cannot be issued at all.
+ * The ACPU project enables them in acpu/proj.conf.
+ */
+#if !defined(USING_CPU_USAGE_PROFILER)
+#error "enable CONFIG_USING_CPU_USAGE_PROFILER=y or cpu_get_usage() is a constant 0"
+#endif
+#if !defined(FINSH_USING_MSH)
+#error "enable FINSH_USING_MSH so cpu_prof_reset can settle the ACPU profiler"
+#endif
+
+static void camera_sw_acpu_profiler_reset(void)
+{
+    char command[] = "cpu_prof_reset";
+
+    (void)msh_exec(command, sizeof(command) - 1U);
+}
+
+static int32_t camera_sw_acpu_profiler_x100(void)
+{
+    float usage = cpu_get_usage();
+
+    return (usage >= 0.0f) ? (int32_t)(usage * 100.0f) : -1;
+}
+
+/* One tick is 1 ms by configuration, so a sane time base advances by ~1000 us.
+ * A zero here means the ACPU could not resolve its LPTIM frequency and every
+ * percentage the profiler computes is meaningless. */
+static uint32_t camera_sw_acpu_profiler_timebase_us(void)
+{
+    uint32_t started = cpu_get_hw_us();
+
+    rt_thread_mdelay(1);
+    return cpu_get_hw_us() - started;
 }
 
 static int camera_sw_acpu_valid_isp_task(uint32_t protocol_version,
@@ -152,16 +214,55 @@ void acpu_main(uint8_t task_name, void *param)
     if (task_name == CAMERA_SW_ACPU_TASK_CPU_USAGE)
     {
         camera_sw_acpu_cpu_usage_task_t *task = param;
-        float usage;
+        uint32_t now;
+        uint32_t window_ms;
+        uint32_t busy_ms;
+        int32_t profiler_prev;
+        int32_t profiler_now;
 
         if (task == NULL)
         {
             acpu_send_result(ACPU_ERR_ASSERT, 0U);
             return;
         }
-        usage = cpu_get_usage();
-        task->usage_x100 = usage < 0.0f ? -1 : (int32_t)(usage * 100.0f);
-        task->status = usage < 0.0f ? -1 : 0;
+        now = camera_sw_acpu_now_ms();
+        if (camera_sw_acpu_window_start_ms == 0U)
+            camera_sw_acpu_window_start_ms = now;
+        window_ms = now - camera_sw_acpu_window_start_ms;
+        busy_ms = camera_sw_acpu_window_busy_ms;
+        camera_sw_acpu_window_busy_ms = 0U;
+        camera_sw_acpu_window_start_ms = now;
+        task->busy_ms = busy_ms;
+        task->window_ms = window_ms;
+        task->status = window_ms == 0U ? -1 : 0;
+        if (window_ms == 0U)
+        {
+            task->usage_x100 = -1;
+        }
+        else
+        {
+            uint64_t usage_x100 = (uint64_t)busy_ms * 10000U / window_ms;
+
+            task->usage_x100 = usage_x100 > 10000U ? 10000 :
+                               (int32_t)usage_x100;
+        }
+        /* Settle the profiler on the same edge as the counters above and read
+         * it back right away, so the two definitions cover the same window.
+         *
+         * The profiler also settles itself, roughly every 2 s of accounted time,
+         * and the ACPU usually waits for the next frame inside one long idle
+         * slice - so that self settle tends to land on the very switch into
+         * this task, leaving an empty interval behind it. A settle with nothing
+         * accumulated reports -1, which would come out as n/a even though a
+         * perfectly good reading was just taken; fall back to it and flag the
+         * value as not settled by this query. */
+        profiler_prev = camera_sw_acpu_profiler_x100();
+        camera_sw_acpu_profiler_reset();
+        profiler_now = camera_sw_acpu_profiler_x100();
+        task->profiler_x100 = (profiler_now >= 0) ? profiler_now :
+                                                   profiler_prev;
+        task->profiler_fresh = (profiler_now >= 0) ? 1 : 0;
+        task->profiler_timebase_us = camera_sw_acpu_profiler_timebase_us();
         acpu_send_result(ACPU_ERR_OK, 0U);
         return;
     }
@@ -170,8 +271,10 @@ void acpu_main(uint8_t task_name, void *param)
     if (task_name == CAMERA_SW_ACPU_TASK_JPEG_DECODE)
     {
         camera_sw_acpu_jpeg_decode_task_t *task = param;
+        uint32_t started = camera_sw_acpu_now_ms();
         int result = camera_sw_acpu_decode(task);
 
+        camera_sw_acpu_account(started);
         if (task == NULL)
         {
             acpu_send_result(ACPU_ERR_ASSERT, 0U);
@@ -187,6 +290,7 @@ void acpu_main(uint8_t task_name, void *param)
     if (task_name == CAMERA_SW_ACPU_TASK_ISP)
     {
         camera_sw_acpu_isp_task_t *task = param;
+        uint32_t started;
         int result;
 
         if ((task == NULL) ||
@@ -205,9 +309,11 @@ void acpu_main(uint8_t task_name, void *param)
             acpu_send_result(ACPU_ERR_OK, 0U);
             return;
         }
+        started = camera_sw_acpu_now_ms();
         result = camera_sw_isp_process_rgb565_be(
             task->pixels, task->width, task->height, task->stride,
             task->isp_flags, &task->isp_result, camera_sw_acpu_now_ms);
+        camera_sw_acpu_account(started);
         task->status = result;
         acpu_send_result(ACPU_ERR_OK, 0U);
         return;
@@ -218,8 +324,10 @@ void acpu_main(uint8_t task_name, void *param)
     if (task_name == CAMERA_SW_ACPU_TASK_JPEG)
     {
         camera_sw_acpu_jpeg_task_t *task = param;
+        uint32_t started = camera_sw_acpu_now_ms();
         int result = camera_sw_acpu_encode(task);
 
+        camera_sw_acpu_account(started);
         if (task == NULL)
         {
             acpu_send_result(ACPU_ERR_ASSERT, 0U);

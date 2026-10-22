@@ -3,6 +3,9 @@
 /project/build_*.zip
 /project/*.log
 /project/Kconfig.tmp
+/project/sf-pkgs
+/project/.sf-pkg
+/docs
 .sconsign.dblite
 *.o
 *.obj

@@ -39,35 +39,63 @@ int photo_storage_format_jpeg_path(uint16_t index, char *path,
 #include "bmp_encoder.h"
 #include "photo_catalog.h"
 
-#define PHOTO_STORAGE_DEVICE "sd1"
+/*
+ * Which SDMMC instance the carrier wires decides the block device name:
+ * SDMMC1 enumerates as "sd0" and SDMMC2 as "sd1" (see the RT-Thread mmcsd
+ * block layer), so both are probed and the first one that shows up is used.
+ */
+static const char *const photo_storage_devices[] =
+{
+    "sd1",
+    "sd0",
+};
 #define PHOTO_STORAGE_MOUNT_POINT "/"
 #define PHOTO_STORAGE_MAX_ROW_SIZE 1440U
+#define PHOTO_STORAGE_DEVICE_RETRIES 30
 
 static int photo_storage_mount(void)
 {
+    const char *device_name = RT_NULL;
     rt_device_t device;
     const char *mounted_path;
+    uint32_t index;
     int retry;
 
-    for (retry = 0; retry < 30; retry++)
+    for (retry = 0; (retry < PHOTO_STORAGE_DEVICE_RETRIES) &&
+                    (device_name == RT_NULL); retry++)
     {
-        device = rt_device_find(PHOTO_STORAGE_DEVICE);
-        if (device != RT_NULL)
-            break;
-        rt_thread_mdelay(100);
+        for (index = 0U;
+             index < sizeof(photo_storage_devices) /
+                     sizeof(photo_storage_devices[0]);
+             index++)
+        {
+            if (rt_device_find(photo_storage_devices[index]) != RT_NULL)
+            {
+                device_name = photo_storage_devices[index];
+                break;
+            }
+        }
+        if (device_name == RT_NULL)
+            rt_thread_mdelay(100);
     }
-    if (device == RT_NULL)
+    if (device_name == RT_NULL)
         return PHOTO_STORAGE_ERROR_DEVICE;
 
+    device = rt_device_find(device_name);
     mounted_path = dfs_filesystem_get_mounted_path(device);
     if (mounted_path != RT_NULL)
         return strcmp(mounted_path, PHOTO_STORAGE_MOUNT_POINT) == 0 ?
                PHOTO_STORAGE_OK : PHOTO_STORAGE_ERROR_MOUNT;
 
-    if (dfs_mount(PHOTO_STORAGE_DEVICE, PHOTO_STORAGE_MOUNT_POINT,
+    if (dfs_mount(device_name, PHOTO_STORAGE_MOUNT_POINT,
                   "elm", 0, RT_NULL) != 0)
         return PHOTO_STORAGE_ERROR_MOUNT;
     return PHOTO_STORAGE_OK;
+}
+
+int photo_storage_ready(void)
+{
+    return photo_storage_mount();
 }
 
 static int photo_storage_next_path(char *path, size_t path_size,

@@ -38,4 +38,34 @@ config CUSTOM_MEM_MAP
     select custom_mem_map
     default y if !SOC_SIMULATOR
 
-source "$SIFLI_PERIPHERALS_ROOT/camera_framework/Kconfig"
+menu "Board camera hardware"
+
+config CAMERA_I2C_DEVICE_NAME
+    string "SCCB I2C device name"
+    default "i2c1"
+
+config CAMERA_XCLK_ENABLE
+    bool "MCU drives the camera MCLK"
+    default y
+
+config CAMERA_XCLK_PWM_DEVICE_NAME
+    string "PWM device that drives the camera MCLK"
+    default "pwmt2"
+    depends on CAMERA_XCLK_ENABLE
+
+config CAMERA_XCLK_PWM_CHANNEL
+    int "PWM channel that drives the camera MCLK"
+    default 1
+    depends on CAMERA_XCLK_ENABLE
+
+config CAMERA_DCMI_PCLK_FALLING
+    bool "Sample the DVP pixel clock on the falling edge"
+    default n
+
+endmenu
+
+# The camera framework Kconfig (CAMERA_FRAMEWORK_ENABLE, sensor/data-bus
+# selection) now comes from the libcamera sf-pkg component: the build Kconfig
+# gets `osource "<project>/sf-pkgs/Kconfig.conandeps"`, which sources
+# sf-pkgs/full_deploy/host/libcamera/<ver>/Kconfig. Do not source it again from
+# an out-of-tree checkout.

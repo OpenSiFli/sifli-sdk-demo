@@ -19,6 +19,7 @@ int camera_image_decode_jpeg(const uint8_t *jpeg, uint32_t jpeg_size,
                              uint16_t *width, uint16_t *height,
                              uint32_t isp_flags,
                              camera_sw_acpu_metrics_t *metrics);
-int camera_image_query_acpu_usage(int32_t *usage_x100);
+/* Query and reset the ACPU counters. @p usage may be RT_NULL to only reset. */
+int camera_image_query_acpu_usage(camera_sw_acpu_usage_t *usage);
 
 #endif

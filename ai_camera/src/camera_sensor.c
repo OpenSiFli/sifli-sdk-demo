@@ -10,9 +10,9 @@
 #include "camera_service.h"
 #include "data_bus_adapter.h"
 
-#if !defined(SENSOR_USING_OV2640) || !defined(CAMERA_OV2640_INTERFACE_DVP) || \
+#if !defined(SENSOR_USING_OV2640) || !defined(CAMERA_USING_DVP) || \
     !defined(CAMERA_DVP_BACKEND_DCMI)
-#error "This application requires OV2640 8-bit DVP through the hardware DCMI backend"
+#error "This application requires CAMERA_MODEL=\"ov2640\" with CAMERA_INTERFACE=\"dvp\" (DCMI backend)"
 #endif
 
 #define CAMERA_SENSOR_FRAME_SIZE (CAMERA_LIVE_WIDTH * CAMERA_LIVE_HEIGHT * 2U)

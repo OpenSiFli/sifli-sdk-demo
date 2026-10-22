@@ -1,33 +1,59 @@
 import os
 from building import *
 
-Import('SIFLI_SDK', 'CAMERA_SOFTWARE_ROOT')
-Import('CAMERA_SW_ISP_RUN_ON_HCPU', 'CAMERA_SW_ISP_RUN_ON_ACPU')
-Import('CAMERA_SW_JPEG_RUN_ON_HCPU', 'CAMERA_SW_JPEG_RUN_ON_ACPU')
+cwd = GetCurrentDir()
+
+Import('SIFLI_SDK')
+Import('CAMERA_SW_ISP_RUN_ON_HCPU', 'CAMERA_SW_ISP_RUN_ON_ACPU',
+       'CAMERA_SW_JPEG_RUN_ON_HCPU', 'CAMERA_SW_JPEG_RUN_ON_ACPU')
+
+# The camera framework itself is an sf-pkg component that building.py links
+# automatically; only the ACPU/HCPU glue and the codec declarations it uses
+# stay in this project.
+CAMERA_SOFTWARE_ROOT = os.path.normpath(
+    os.path.join(cwd, '../components/camera_software'))
+CAMERA_ISP_ROOT = os.path.join(CAMERA_SOFTWARE_ROOT, 'isp')
+CAMERA_JPEG_ROOT = os.path.join(CAMERA_SOFTWARE_ROOT, 'jpeg')
+Export('CAMERA_ISP_ROOT', 'CAMERA_JPEG_ROOT')
 
 # Add source code
-display_src = Glob('display/*.c')
+# The display path is optional: a camera-only validation build drops it so the
+# LCD is not opened and the DVP pins stay free on carriers where they overlap.
+display_src = Glob('display/*.c') if GetDepend('CAMERA_APP_PREVIEW') else []
 app_src = Glob('app/*.c', exclude=[
     'app/camera_isp_compare.c',
     'app/camera_isp_config.c',
     'app/camera_isp_mode.c',
     'app/camera_sensor_awb_guard.c',
 ])
-src = (Glob('*.c') + app_src + Glob('image_processing/*.c') +
-       Glob('camera/*.c') + display_src + Glob('input/*.c') +
-       Glob('storage/*.c'))
+
+camera_src = [
+    'camera/frame_pool.c',
+    'camera/jpeg_info.c',
+]
+
+# Photo capture to the SD card: elm filesystem, the software JPEG encoder and
+# the shutter key. The input sources need the button library, and both parts
+# need a carrier whose SDMMC pads are free of the camera and the panel.
+storage_src = Glob('storage/*.c')
+input_src = Glob('input/*.c') if GetDepend('USING_BUTTON_LIB') else []
+
+src = (Glob('*.c') + app_src + Glob('image_processing/*.c') + camera_src +
+       display_src + storage_src + input_src)
+# The HCPU side of the ACPU camera pipeline stays project-local.
 if CAMERA_SW_ISP_RUN_ON_ACPU or CAMERA_SW_JPEG_RUN_ON_ACPU:
     src += SConscript(
         os.path.join(CAMERA_SOFTWARE_ROOT, 'example/acpu/hcpu/SConscript'),
         variant_dir='camera_sw_acpu_hcpu', duplicate=0)
-if CAMERA_SW_ISP_RUN_ON_HCPU:
-    src += SConscript(os.path.join(CAMERA_SOFTWARE_ROOT, 'isp/SConscript'),
-                      variant_dir='camera_sw_isp', duplicate=0)
-if CAMERA_SW_JPEG_RUN_ON_HCPU:
-    src += SConscript(os.path.join(CAMERA_SOFTWARE_ROOT, 'jpeg/SConscript'),
-                      variant_dir='camera_sw_jpeg', duplicate=0)
 acpu_ctrl_dir = os.path.join(SIFLI_SDK, 'middleware/acpu_ctrl')
-group = DefineGroup('Applications', src, depend = [''],
-                    CPPPATH=[acpu_ctrl_dir])
+acpu_client_dir = os.path.join(CAMERA_SOFTWARE_ROOT, 'example/acpu/include')
+camera_includes = [acpu_ctrl_dir, acpu_client_dir]
+if not GetDepend('CAMERA_SW_ISP'):
+    # The glue header includes camera_sw_isp_pipeline.h even when the software
+    # ISP is disabled, and the framework then does not put its ISP include
+    # directory on the build path, so use the copy kept with the glue.
+    camera_includes.append(os.path.join(CAMERA_ISP_ROOT, 'include'))
+group = DefineGroup('Camera Application', src, depend = [''],
+                    CPPPATH=camera_includes)
 
 Return('group')

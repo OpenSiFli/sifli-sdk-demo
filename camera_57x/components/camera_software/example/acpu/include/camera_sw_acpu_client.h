@@ -25,6 +25,16 @@ typedef struct
     camera_sw_acpu_isp_result_t isp;
 } camera_sw_acpu_metrics_t;
 
+typedef struct
+{
+    int32_t usage_x100;
+    int32_t profiler_x100;
+    int32_t profiler_fresh;
+    uint32_t busy_ms;
+    uint32_t window_ms;
+    uint32_t profiler_timebase_us;
+} camera_sw_acpu_usage_t;
+
 int camera_sw_acpu_encode_rgb565_be(const uint8_t *pixels, uint16_t width,
                                     uint16_t height, uint32_t pitch,
                                     uint8_t *jpeg, uint32_t jpeg_capacity,
@@ -40,6 +50,6 @@ int camera_sw_acpu_process_rgb565_be(uint8_t *pixels, uint16_t width,
                                      uint16_t height, uint32_t stride,
                                      uint32_t isp_flags,
                                      camera_sw_acpu_metrics_t *metrics);
-int camera_sw_acpu_query_cpu_usage(int32_t *usage_x100);
+int camera_sw_acpu_query_cpu_usage(camera_sw_acpu_usage_t *usage);
 
 #endif

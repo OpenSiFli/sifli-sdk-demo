@@ -31,7 +31,7 @@ typedef struct
     uint8_t *data;
     uint32_t size;
     uint32_t sequence;
-} camera_stream_frame_t;
+} camera_source_stream_frame_t;
 
 typedef struct
 {
@@ -40,7 +40,8 @@ typedef struct
     int (*capture)(uint8_t *dst, uint32_t size, camera_source_frame_cb_t cb,
                    void *ctx);
     int (*stream_start)(uint8_t *buffer, uint32_t size);
-    int (*stream_wait)(camera_stream_frame_t *frame, uint32_t timeout_ms);
+    int (*stream_wait)(camera_source_stream_frame_t *frame,
+                       uint32_t timeout_ms);
     int (*stream_stop)(void);
     int (*capture_still)(camera_source_writer_t writer, void *context,
                          uint32_t *captured_size);

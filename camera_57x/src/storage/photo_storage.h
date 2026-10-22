@@ -38,6 +38,13 @@ int photo_storage_save_jpeg(photo_storage_jpeg_producer_t producer,
                             uint32_t *saved_size);
 int photo_storage_save_jpeg_data(const uint8_t *jpeg, uint32_t jpeg_size,
                                  char *saved_path, size_t saved_path_size);
+
+/*
+ * Mount the card unless it is already mounted and report whether it is ready
+ * for the save/load calls above (PHOTO_STORAGE_OK) or not.
+ */
+int photo_storage_ready(void);
+
 int photo_storage_find_latest_jpeg(char *path, size_t path_size,
                                    uint16_t *index);
 int photo_storage_find_next_jpeg(uint16_t current, char *path,

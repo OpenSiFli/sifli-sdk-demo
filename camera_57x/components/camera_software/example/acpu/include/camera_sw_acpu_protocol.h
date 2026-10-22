@@ -11,7 +11,7 @@
 #define CAMERA_SW_ACPU_TASK_CPU_USAGE 4U
 #define CAMERA_SW_ACPU_TASK_ISP 5U
 
-#define CAMERA_SW_ACPU_PROTOCOL_VERSION 5U
+#define CAMERA_SW_ACPU_PROTOCOL_VERSION 6U
 
 #define CAMERA_SW_ACPU_ISP_FLAG_AWB_STATS CAMERA_SW_ISP_FLAG_AWB_STATS
 #define CAMERA_SW_ACPU_ISP_FLAG_AWB_APPLY CAMERA_SW_ISP_FLAG_AWB_APPLY
@@ -71,6 +71,13 @@ typedef struct
 {
     int32_t usage_x100;
     int32_t status;
+    uint32_t busy_ms;
+    uint32_t window_ms;
+    int32_t profiler_x100;
+    /* 1 when profiler_x100 comes from the settle this query just issued, 0 when
+     * it is the value of the profiler's own previous settle. */
+    int32_t profiler_fresh;
+    uint32_t profiler_timebase_us;
 } camera_sw_acpu_cpu_usage_task_t;
 
 #endif

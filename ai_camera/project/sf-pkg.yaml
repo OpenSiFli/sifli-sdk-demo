@@ -1,0 +1,9 @@
+# Project-level external components.
+#
+# The SDK camera module contributes camera_framework automatically when
+# BSP_USING_CAMERA1 is enabled; see
+# customer/peripherals/camera/sf-pkg.yaml.
+#
+# Keep this file: without a project-root sf-pkg.yaml the SDK does not enable
+# module-level dependency aggregation at all.
+requires:

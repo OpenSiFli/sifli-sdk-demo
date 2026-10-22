@@ -1,7 +1,13 @@
 #include "photo_decoder.h"
 
+#include "../app/camera_isp_flags.h"
 #include "../image_processing/camera_image_processor.h"
 #include "../camera/jpeg_info.h"
+
+static uint32_t photo_decoder_isp_flags(void)
+{
+    return camera_isp_flags();
+}
 
 static int photo_decoder_software_decode(const uint8_t *jpeg,
                                          uint32_t jpeg_size,
@@ -21,7 +27,7 @@ static int photo_decoder_software_decode(const uint8_t *jpeg,
         return PHOTO_DECODER_UNSUPPORTED;
     if (camera_image_decode_jpeg(jpeg, jpeg_size, destination,
                                  destination_size, width, height,
-                                 0U, &metrics) != 0)
+                                 photo_decoder_isp_flags(), &metrics) != 0)
         return PHOTO_DECODER_UNSUPPORTED;
     if (decode_ms != 0)
         *decode_ms = metrics.isp.decode_ms;

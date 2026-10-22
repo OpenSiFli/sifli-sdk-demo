@@ -13,3 +13,5 @@
 .idea
 .vscode
 Kconfig.tmp
+/project/sf-pkgs
+/project/.sf-pkg

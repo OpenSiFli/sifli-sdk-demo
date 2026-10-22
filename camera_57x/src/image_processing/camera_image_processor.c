@@ -222,12 +222,12 @@ int camera_image_decode_jpeg(const uint8_t *jpeg, uint32_t jpeg_size,
 #endif
 }
 
-int camera_image_query_acpu_usage(int32_t *usage_x100)
+int camera_image_query_acpu_usage(camera_sw_acpu_usage_t *usage)
 {
 #if defined(CAMERA_SW_ISP_RUN_ON_ACPU) || defined(CAMERA_SW_JPEG_RUN_ON_ACPU)
-    return camera_sw_acpu_query_cpu_usage(usage_x100);
+    return camera_sw_acpu_query_cpu_usage(usage);
 #else
-    (void)usage_x100;
+    (void)usage;
     return -1;
 #endif
 }

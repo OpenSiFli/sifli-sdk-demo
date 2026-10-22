@@ -17,18 +17,29 @@ static int camera_sw_acpu_valid_isp_flags(uint32_t flags)
             ((flags & CAMERA_SW_ACPU_ISP_FLAG_AWB_STATS) != 0U));
 }
 
-int camera_sw_acpu_query_cpu_usage(int32_t *usage_x100)
+int camera_sw_acpu_query_cpu_usage(camera_sw_acpu_usage_t *usage)
 {
-    camera_sw_acpu_cpu_usage_task_t task = {.usage_x100 = -1, .status = -1};
+    camera_sw_acpu_cpu_usage_task_t task;
     uint8_t error_code = 0U;
 
-    if (usage_x100 == RT_NULL)
-        return -1;
+    memset(&task, 0, sizeof(task));
+    task.usage_x100 = -1;
+    task.profiler_x100 = -1;
+    task.status = -1;
     (void)acpu_run_task(CAMERA_SW_ACPU_TASK_CPU_USAGE, &task, sizeof(task),
                         &error_code);
-    if ((error_code != 0U) || (task.status != 0) || (task.usage_x100 < 0))
+    if ((error_code != 0U) || (task.status != 0) || (task.usage_x100 < 0) ||
+        (task.window_ms == 0U) || (task.busy_ms > task.window_ms))
         return -1;
-    *usage_x100 = task.usage_x100;
+    if (usage != RT_NULL)
+    {
+        usage->usage_x100 = task.usage_x100;
+        usage->profiler_x100 = task.profiler_x100;
+        usage->profiler_fresh = task.profiler_fresh;
+        usage->busy_ms = task.busy_ms;
+        usage->window_ms = task.window_ms;
+        usage->profiler_timebase_us = task.profiler_timebase_us;
+    }
     return 0;
 }
 

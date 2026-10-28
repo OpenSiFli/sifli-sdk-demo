@@ -1,0 +1,24 @@
+import os
+Import('RTT_ROOT')
+Import('rtconfig')
+from building import *
+
+cwd = GetCurrentDir()
+src = ["main.c", "screen_cast_ui.c", "sc_qr.c"]
+
+# FreeType font resources: the ttf selected by FREETYPE_TINY_FONT_FULL
+# (Kconfig.proj) is converted to a C array and linked into the firmware.
+src.extend(SConscript(os.path.join(cwd, 'resource/fonts/SConscript'), variant_dir="resource/fonts", duplicate=0))
+
+CPPPATH = [cwd, os.path.join(cwd, 'wifi_tran'), str(Dir('#'))]
+CPPDEFINES = []
+
+simu = GetOption('simu')
+if simu:
+    print("Add flag for 52X LCPU simulation")
+    CPPDEFINES += ['SF32LB52X_58']
+    src += ["lcpu_img.c"]
+
+group = DefineGroup('screen_cast_app', src, depend=[''], CPPPATH=CPPPATH, CPPDEFINES=CPPDEFINES)
+
+Return('group')

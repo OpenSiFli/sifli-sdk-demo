@@ -1,0 +1,42 @@
+menu "Screen cast (OTA-V3 continual file stream)"
+
+config USING_SCREEN_CAST
+    bool "Enable screen cast service"
+    depends on PROTO_V3 && PKG_USING_LITTLEVGL2RTT
+    default n
+    help
+        Receive a live screen / map cast pushed by the phone app over the BLE
+        serial transmission channel (SiFli OTA-V3 "continual file" stream) and
+        expose the decoded JPEG / audio / navigation frames to the application.
+
+        Only the protocol component (PROTO_V3) is needed: the frame layout,
+        the response builders and the link are all shared. The firmware-update
+        engine (OTA_EXT_V3) is not required.
+
+config USING_SCREEN_CAST_WIFI
+    bool "Enable WiFi (P2P GO + TCP) cast transport"
+    depends on USING_SCREEN_CAST && RT_USING_WIFI && RT_USING_LWIP
+    default n
+    help
+        Add a TCP transport on top of the screen cast service: the device
+        starts a P2P GO hotspot and a TCP server, the phone joins the
+        hotspot and connects to the server. The frame format is identical
+        to the BT PAN transport used by solution2.0 (see src/wifi_tran).
+
+        Requires a WiFi driver with P2P GO support (e.g. AIC8800D40L).
+
+config USING_SCREEN_CAST_WIFI_AP
+    bool "Use plain SoftAP instead of P2P GO"
+    depends on USING_SCREEN_CAST_WIFI
+    default n
+    help
+        Start a plain SoftAP (rt_wlan_start_ap) instead of a WiFi Direct
+        P2P GO group (rt_wlan_p2p_go_start): the SSID shows up in the normal
+        WiFi list, so any phone (including iPhone) can join it directly.
+        The trade-off is that the phone drops its current WiFi while
+        connected, and the channel is fixed to 6 (use rt_wlan_start_ap_adv()
+        to pick a channel).
+
+        Requires a driver with wlan_softap support (e.g. AIC8800D40L).
+
+endmenu

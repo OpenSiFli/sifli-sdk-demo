@@ -1,0 +1,15 @@
+Import('RTT_ROOT')
+Import('rtconfig')
+Import('SIFLI_SDK')
+import os
+from building import *
+
+cwd = GetCurrentDir()
+
+src = ["ota_wifi_tran.c"]
+# proto_v3: proto_v3_link.h (TCP transport hooks / proto_v3_rx_* API)
+CPPPATH = [cwd, os.path.join(SIFLI_SDK, 'middleware/proto_v3')]
+
+group = DefineGroup('wifi_tran', src, depend=['USING_SCREEN_CAST_WIFI'], CPPPATH=CPPPATH)
+
+Return('group')

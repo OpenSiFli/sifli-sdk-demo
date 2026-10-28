@@ -1,0 +1,16 @@
+Import('RTT_ROOT')
+Import('rtconfig')
+from building import *
+
+cwd = GetCurrentDir()
+
+src = Split("""
+screen_cast_proc.c
+screen_cast_proto.c
+""")
+
+CPPPATH = [cwd]
+
+group = DefineGroup('screen_cast', src, depend=['USING_SCREEN_CAST', 'PKG_USING_LITTLEVGL2RTT', 'PROTO_V3'], CPPPATH=CPPPATH)
+
+Return('group')

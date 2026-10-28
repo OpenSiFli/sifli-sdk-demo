@@ -1,0 +1,29 @@
+config BF0_HCPU
+    bool
+    default y
+
+config CUSTOM_MEM_MAP
+    bool
+    select custom_mem_map
+    default y
+
+config EXTRA_LCPU_IMG
+    bool "using extra lcpu imag"
+    default n
+
+# FreeType tiny font set (src/resource/fonts/freetype) compiled into the firmware.
+# tiny55_full (~1.0MB) carries the full glyph set, tiny55_lite (~0.5MB) the
+# common subset - pick lite when the ROM (4MB) is tight, e.g. with the WiFi stack.
+choice
+    prompt "freetype tiny font set"
+    default FREETYPE_TINY_FONT_LITE
+config FREETYPE_TINY_FONT_FULL
+    bool "tiny55_full (full glyph set, ~1.0MB flash)"
+config FREETYPE_TINY_FONT_LITE
+    bool "tiny55_lite (common glyph set, ~0.5MB flash)"
+endchoice
+
+
+
+# Screen cast protocol handling bundled with this demo
+rsource "../src/protocol/Kconfig"

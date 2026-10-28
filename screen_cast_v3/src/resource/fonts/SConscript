@@ -1,0 +1,27 @@
+# FreeType font resources for screen_cast.
+# The selected .ttf is converted to a C array (Env.FontFile -> font2c) and linked
+# into the firmware; lvsf registers it as the default FreeType font family.
+import os
+from building import *
+import rtconfig
+
+cwd = GetCurrentDir()
+
+if GetDepend('FREETYPE_TINY_FONT_FULL'):
+    font_name = 'tiny55_full'
+elif GetDepend('FREETYPE_TINY_FONT_LITE'):
+    font_name = 'tiny55_lite'
+else:
+    font_name = ''
+
+CPPDEFINES = []
+objs = []
+
+if font_name:
+    CPPDEFINES += ["FREETYPE_FONT_NAME={}".format(font_name)]
+    objs = Glob('freetype/{}.ttf'.format(font_name))
+    objs = Env.FontFile(objs)
+
+objs = DefineGroup('resource', objs, depend=['PKG_USING_LITTLEVGL2RTT'], CPPDEFINES=CPPDEFINES)
+
+Return('objs')

@@ -1,0 +1,23 @@
+import os
+from building import *
+
+cwd = GetCurrentDir()
+objs = []
+
+# Add SDK
+Import('SIFLI_SDK')
+objs.extend(SConscript(os.path.join(SIFLI_SDK, 'SConscript'), variant_dir="sifli_sdk", duplicate=0))
+
+# Add application source code
+objs.extend(SConscript(os.path.join(cwd, '../src/SConscript'), variant_dir="src", duplicate=0))
+
+# Add the cast protocol handling (message dispatch + frame processing)
+objs.extend(SConscript(os.path.join(cwd, '../src/protocol/SConscript'), variant_dir="protocol", duplicate=0))
+
+# Add WiFi TCP transport (P2P GO + TCP server), built when CONFIG_USING_SCREEN_CAST_WIFI=y
+objs.extend(SConscript(os.path.join(cwd, '../src/wifi_tran/SConscript'), variant_dir="wifi_tran", duplicate=0))
+
+# Add LCPU BLE patch
+objs.extend(SConscript(os.path.join(SIFLI_SDK, 'example/rom_bin/lcpu_general_ble_img/SConscript'), variant_dir="lcpu_patch", duplicate=0))
+
+Return('objs')

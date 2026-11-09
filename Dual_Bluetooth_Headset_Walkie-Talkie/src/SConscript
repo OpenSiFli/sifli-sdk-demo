@@ -3,7 +3,16 @@ from building import *
 cwd = GetCurrentDir()
 src = Glob('*.c')
 
-group = DefineGroup('Applications', src, depend=[''], CPPPATH=[cwd])
+# The local MP3 source role is 52X-only; the 57Z relay has no file system.
+if not GetDepend('SOC_SF32LB52X'):
+    src = [f for f in src if not str(f).endswith('app_source.c')]
+
+path = [cwd]
+if GetDepend('SOC_SF32LB57X'):
+    board_path, _ = GetBoardPath(GetBoardName())
+    if board_path:
+        path.append(board_path)
+
+group = DefineGroup('Applications', src, depend=[''], CPPPATH=path)
 
 Return('group')
-

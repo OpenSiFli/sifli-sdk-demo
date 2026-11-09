@@ -16,10 +16,31 @@
 
 #include "app_board.h"
 
+#if defined(SF32LB57X)
+#define APP_LED1_PIN GET_PIN(1, BOARD_57Z_LED1_PIN)
+#define APP_LED2_PIN GET_PIN(1, BOARD_57Z_LED2_PIN)
+#else
 #define APP_LED1_PIN GET_PIN(1, 31)
 #define APP_LED2_PIN GET_PIN(1, 32)
 #define APP_ROLE_PIN GET_PIN(1, 39)
+#endif
 #define APP_LED_BLINK_MS 500U
+
+#if defined(BSP_ENABLE_I2S_CODEC)
+void HAL_I2S_MspInit(I2S_HandleTypeDef *hi2s)
+{
+    static CLK_DIV_T capture_clock = {44100U, 128U, 128U, 4U};
+
+    if ((hi2s->Instance == hwp_i2s1) &&
+            (hi2s->Init.rx_cfg.sample_rate == capture_clock.samplerate) &&
+            hi2s->Init.rx_cfg.slave_mode && hi2s->Init.tx_cfg.slave_mode)
+    {
+        __HAL_I2S_SET_SPCLK_DIV(hi2s, 4U);
+        hi2s->Init.rx_cfg.clk_div = &capture_clock;
+        hi2s->Init.tx_cfg.clk_div = &capture_clock;
+    }
+}
+#endif
 
 static const rt_base_t g_led_pins[APP_HEADSET_COUNT] =
 {
@@ -34,7 +55,11 @@ static struct rt_timer g_led_timer;
 
 static void app_board_write_led(uint8_t index, bool on)
 {
+#if defined(SF32LB57X) && !defined(BOARD_57Z_LED_ACTIVE_LOW)
+    rt_pin_write(g_led_pins[index], on ? PIN_HIGH : PIN_LOW);
+#else
     rt_pin_write(g_led_pins[index], on ? PIN_LOW : PIN_HIGH);
+#endif
 }
 
 static void app_board_refresh_leds(void)
@@ -73,6 +98,11 @@ app_role_t app_board_init(void)
 {
     app_role_t role;
 
+#if defined(SF32LB57X)
+    role = APP_ROLE_RELAY;
+    rt_pin_mode(APP_LED1_PIN, PIN_MODE_OUTPUT);
+    rt_pin_mode(APP_LED2_PIN, PIN_MODE_OUTPUT);
+#else
     HAL_PIN_Set(PAD_PA39, GPIO_A39, PIN_PULLDOWN, 1);
     rt_pin_mode(APP_ROLE_PIN, PIN_MODE_INPUT_PULLDOWN);
     rt_thread_mdelay(1U);
@@ -83,6 +113,7 @@ app_role_t app_board_init(void)
     HAL_PIN_Set(PAD_PA32, GPIO_A32, PIN_NOPULL, 1);
     rt_pin_mode(APP_LED1_PIN, PIN_MODE_OUTPUT);
     rt_pin_mode(APP_LED2_PIN, PIN_MODE_OUTPUT);
+#endif
     app_board_write_led(0, false);
     app_board_write_led(1, false);
 

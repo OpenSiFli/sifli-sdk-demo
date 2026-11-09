@@ -74,6 +74,15 @@ typedef void (*app_a2dp_share_callback_t)(app_a2dp_share_event_t event,
                                           uint32_t sequence, int result,
                                           void *user_data);
 
+/*
+ * Optional per-link gate: return false to keep an already-open Source link
+ * from being started yet (for example while its HFP connection is still
+ * being set up).  mac is the remote address in 6-byte display order.
+ */
+typedef bool (*app_a2dp_share_start_filter_t)(const uint8_t mac[6]);
+void app_a2dp_share_set_start_filter(
+    app_a2dp_share_start_filter_t filter);
+
 int app_a2dp_share_init(app_a2dp_share_callback_t callback, void *user_data);
 int app_a2dp_share_start(void);
 int app_a2dp_share_stop(uint32_t sequence);
@@ -84,7 +93,6 @@ uint8_t app_a2dp_share_get_volume(void);
 void app_a2dp_share_on_a2dp_event(uint16_t event_id);
 
 /* Reconcile open/streaming Source links with the current start/stop request. */
-void app_a2dp_share_reconcile_streams(void);
 
 bool app_a2dp_share_is_stopped(void);
 void app_a2dp_share_get_status(app_a2dp_share_status_t *status);

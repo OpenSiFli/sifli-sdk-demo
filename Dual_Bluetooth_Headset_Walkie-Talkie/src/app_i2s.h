@@ -23,7 +23,6 @@ typedef struct
 {
     uint32_t rx_indicated_bytes;
     uint32_t rx_bytes;
-    uint32_t rx_pipe_dropped_bytes;
     uint32_t rx_overflow_bytes;
     uint32_t rx_underflows;
     uint32_t device_errors;
@@ -31,7 +30,7 @@ typedef struct
 
 int app_i2s_init(void);
 bool app_i2s_is_ready(void);
-void app_i2s_set_rx_enabled(bool enabled);
+int app_i2s_set_rx_enabled(bool enabled);
 rt_size_t app_i2s_rx_buffered(void);
 rt_size_t app_i2s_read(void *buffer, rt_size_t size, uint32_t timeout_ms);
 void app_i2s_get_stats(app_i2s_stats_t *stats);

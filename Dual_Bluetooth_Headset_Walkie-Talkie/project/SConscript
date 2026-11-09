@@ -17,6 +17,10 @@ objs.extend(SConscript(
     variant_dir='sifli_sdk',
     duplicate=0))
 
+# The Bluetooth stack also exports sbc_decode with a different interface.
+DefineGroup('libsbc', [], depend=['PKG_USING_LIBSBC'],
+            LOCAL_CPPDEFINES=[('sbc_decode', 'app_libsbc_decode')])
+
 objs.extend(SConscript(
     os.path.join(cwd, '../src/SConscript'),
     variant_dir='src',

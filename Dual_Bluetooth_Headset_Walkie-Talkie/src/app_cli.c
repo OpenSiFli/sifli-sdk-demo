@@ -9,7 +9,9 @@
 #include <rtthread.h>
 
 #include "app_bt.h"
+#if !defined(SF32LB57X)
 #include "app_source.h"
+#endif
 #include "app_state.h"
 
 static void app_cli_relay_help(void)
@@ -19,11 +21,14 @@ static void app_cli_relay_help(void)
     rt_kprintf("  intercom scan\n");
     rt_kprintf("  intercom connect <scan-index|XX:XX:XX:XX:XX:XX>\n");
     rt_kprintf("  intercom disconnect <headset-index|XX:XX:XX:XX:XX:XX>\n");
+    rt_kprintf("  intercom unpair <XX:XX:XX:XX:XX:XX>\n");
+    rt_kprintf("  intercom bond <list|clear>\n");
     rt_kprintf("  intercom talk <start|stop>\n");
     rt_kprintf("  intercom volume\n");
     rt_kprintf("  intercom volume <music|talk> <headset-index> <0-15>\n");
 }
 
+#if !defined(SF32LB57X)
 static void app_cli_source_help(void)
 {
     rt_kprintf("Usage:\n");
@@ -31,9 +36,13 @@ static void app_cli_source_help(void)
     rt_kprintf("  intercom play\n");
     rt_kprintf("  intercom stop\n");
 }
+#endif
 
 static void app_cli_help(void)
 {
+#if defined(SF32LB57X)
+    app_cli_relay_help();
+#else
     if (app_state_get_role() == APP_ROLE_SOURCE)
     {
         app_cli_source_help();
@@ -42,6 +51,7 @@ static void app_cli_help(void)
     {
         app_cli_relay_help();
     }
+#endif
 }
 
 static bool app_cli_parse_volume(const char *text, uint8_t *level)
@@ -139,15 +149,18 @@ __ROM_USED void intercom(int argc, char **argv)
 
     if ((strcmp(argv[1], "status") == 0) && (argc == 2))
     {
+#if !defined(SF32LB57X)
         if (role == APP_ROLE_SOURCE)
         {
             app_source_print_status();
         }
         else
+#endif
         {
             app_bt_print_status();
         }
     }
+#if !defined(SF32LB57X)
     else if (role == APP_ROLE_SOURCE)
     {
         if ((strcmp(argv[1], "play") == 0) && (argc == 2))
@@ -163,6 +176,7 @@ __ROM_USED void intercom(int argc, char **argv)
             app_cli_source_help();
         }
     }
+#endif
     else if ((strcmp(argv[1], "scan") == 0) && (argc == 2))
     {
         app_cli_print_result("scan", app_bt_scan());
@@ -174,6 +188,25 @@ __ROM_USED void intercom(int argc, char **argv)
     else if ((strcmp(argv[1], "disconnect") == 0) && (argc == 3))
     {
         app_cli_print_result("disconnect", app_bt_disconnect(argv[2]));
+    }
+    else if ((strcmp(argv[1], "unpair") == 0) && (argc == 3))
+    {
+        app_cli_print_result("unpair", app_bt_unpair(argv[2]));
+    }
+    else if ((strcmp(argv[1], "bond") == 0) && (argc == 3))
+    {
+        if (strcmp(argv[2], "list") == 0)
+        {
+            app_bt_bond_list();
+        }
+        else if (strcmp(argv[2], "clear") == 0)
+        {
+            app_cli_print_result("bond clear", app_bt_bond_clear());
+        }
+        else
+        {
+            app_cli_help();
+        }
     }
     else if ((strcmp(argv[1], "talk") == 0) && (argc == 3))
     {

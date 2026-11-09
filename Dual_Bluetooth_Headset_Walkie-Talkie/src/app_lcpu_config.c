@@ -9,9 +9,11 @@
 
 #include "bf0_hal.h"
 
-#if !defined(SF32LB52X)
-#error "This application supports the SF32LB52X Nano N4 board only."
+#if !defined(SF32LB52X) && !defined(SF32LB57X)
+#error "This application supports SF32LB52X and SF32LB57X only."
 #endif
+
+#if defined(SF32LB52X)
 
 static const uint16_t g_app_em_offset[HAL_LCPU_CONFIG_EM_BUF_MAX_NUM] =
 {
@@ -21,23 +23,28 @@ static const uint16_t g_app_em_offset[HAL_LCPU_CONFIG_EM_BUF_MAX_NUM] =
     0x27FC, 0x2810, 0x2824, 0x2914, 0x2924, 0x29E4, 0x2A00, 0x3A10,
     0x4E24, 0x5F04,
 };
+#endif
 
 void lcpu_rom_config_default(void);
 
 void lcpu_rom_config(void)
 {
+#if defined(SF32LB52X)
     hal_lcpu_bluetooth_em_config_t em_offset = {0};
+#endif
     hal_lcpu_bluetooth_act_configt_t activity = {0};
     hal_lcpu_bluetooth_rom_config_t config = {0};
     HAL_StatusTypeDef status;
 
     lcpu_rom_config_default();
 
+#if defined(SF32LB52X)
     memcpy(em_offset.em_buf, g_app_em_offset, sizeof(g_app_em_offset));
     em_offset.is_valid = 1U;
     status = HAL_LCPU_CONFIG_set(HAL_LCPU_CONFIG_BT_EM_BUF, &em_offset,
                                  sizeof(em_offset));
     HAL_ASSERT(status == HAL_OK);
+#endif
 
     activity.bt_max_acl = 3U;
     activity.bt_max_sco = 2U;

@@ -1,0 +1,49 @@
+config ASIC
+    bool
+    default y
+
+menu "SF32LB57Z Core Board Configuration"
+
+    comment "Pin numbers are PAxx numbers. Change them to match the board schematic."
+
+    config BOARD_57Z_UART_TX_PIN
+        int "Console UART1 TX pad (PAxx)"
+        default 19
+
+    config BOARD_57Z_UART_RX_PIN
+        int "Console UART1 RX pad (PAxx)"
+        default 18
+
+    config BOARD_57Z_I2S_MCLK_PIN
+        int "I2S1 MCLK pad (PAxx)"
+        default 2
+
+    config BOARD_57Z_I2S_SDO_PIN
+        int "I2S1 SDO pad (PAxx)"
+        default 3
+
+    config BOARD_57Z_I2S_SDI_PIN
+        int "I2S1 SDI pad (PAxx)"
+        default 4
+
+    config BOARD_57Z_I2S_BCK_PIN
+        int "I2S1 BCK pad (PAxx)"
+        default 5
+
+    config BOARD_57Z_I2S_LRCK_PIN
+        int "I2S1 LRCK pad (PAxx)"
+        default 6
+
+    config BOARD_57Z_LED1_PIN
+        int "Headset 1 LED pad (PAxx)"
+        default 31
+
+    config BOARD_57Z_LED2_PIN
+        int "Headset 2 LED pad (PAxx)"
+        default 21
+
+    config BOARD_57Z_LED_ACTIVE_LOW
+        bool "LEDs are active low"
+        default y
+
+endmenu

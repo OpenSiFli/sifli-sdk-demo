@@ -1,14 +1,14 @@
 # 双蓝牙耳机对讲 Demo 交付说明
 
-本 Demo 面向 SF32LB52B Nano N4 开发板。
+本 Demo 面向 SF32LB52B Nano N4 及SF32LB57Z Core开发板。
 
 ## 功能概览
 
 | **功能** | **当前实现** |
 | --- | --- |
-| 固件 | 两块 Nano N4 使用同一套固件 |
+| 固件 | 两块开发板使用同一套固件 |
 | 角色选择 | PA39 高电平为音源设备；低电平或悬空为测试主设备 |
-| 测试音源 | 内置 /test1.mp3，44.1 kHz、双声道，手动开始、循环播放 |
+| 测试音源 | 52B版本内置 /test1.mp3，44.1 kHz、双声道，手动开始、循环播放 |
 | I2S | 音源设备为 TX master；测试/中继设备为 RX slave |
 | 音乐播放 | PCM 编码一次后，调用 SDK sharing 逻辑向两副 A2DP Sink 耳机发送同一组 SBC 包 |
 | 对讲 | 两路 HFP/SCO 之间进行全双工语音转发 |
@@ -197,6 +197,6 @@ intercom connect E2:56:30:0A:80:AC
 
 ## 提交时的SDK信息：
 SDK branch: main
-SDK commit: 4407380ca5207436cdc60d747e7a96b4609e297b
+SDK commit: cf3890f67ac8f765f141bb320ce6737b7110af41
 SDK version: 2.5.0
 Build target: sf32lb52-nano_n4_hcpu

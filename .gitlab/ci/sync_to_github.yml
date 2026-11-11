@@ -5,56 +5,85 @@
 # commit to GitHub. You can also create a pipeline via Build -> Pipelines ->
 # Run pipeline and click the job there.
 #
+# The pipeline branch is mirrored to the same branch name on GitHub:
+#   SYNC_BRANCH unset -> GitHub branch = the branch this pipeline runs on
+#   SYNC_BRANCH set   -> GitHub branch = SYNC_BRANCH (the target name only; the
+#                        content is always the pipeline commit)
+# Tags reachable from the pushed commit are synced as well.
+#
 # Required GitLab CI/CD variables (Settings -> CI/CD -> Variables):
 #   GITHUB_DEPLOY_KEY  base64-encoded SSH private key; its public key must be added
 #                      to the GitHub repo Deploy keys with "Allow write access".
 #   GITHUB_REPO        target repo, owner/repo, e.g. OpenSiFli/sifli-sdk-demo
-#   GIT_CI_USER_NAME   optional, committer name, default "SiFli CI"
-#   GIT_CI_USER_EMAIL  optional, committer email, default "ci@sifli.com"
-#   SYNC_BRANCH        optional, branch to sync, defaults to current $CI_COMMIT_REF_NAME
+#   SYNC_BRANCH        optional, overrides the GitHub branch name
+#
+# The image is the shared internal one already used by other SiFli projects. It
+# ships git, ssh and base64, so nothing is installed at job runtime (apk add was
+# the slowest part of the previous setup).
 sync_to_github:
   stage: sync_to_github
-  # alpine/git's default entrypoint is git itself, which turns the script into
-  # `git sh -c ...` and fails with "git: 'sh' is not a git command". Clear the
-  # entrypoint so the runner uses a normal shell.
   image:
-    name: alpine/git:latest
+    name: $CI_REGISTRY/sifli/forge-mirror:latest
+    # Clear the entrypoint so the runner uses a normal shell instead of the
+    # image's default command.
     entrypoint: [""]
   # Pin to a docker runner. Without tags the job may be picked up by any runner
-  # (including a Windows PowerShell runner that cannot run the alpine image),
+  # (including a Windows PowerShell runner that cannot run the image),
   # which causes SSL or shell-incompatibility errors.
   tags:
     - docker
   variables:
     GIT_STRATEGY: clone
-    GIT_DEPTH: 0
-  before_script:
-    # alpine/git ships ssh but not base64/bash; install the tools we need.
-    - apk add --no-cache openssh-client bash coreutils
-    # Start the SSH agent and load the deploy private key.
-    - eval $(ssh-agent -s)
-    - echo "$GITHUB_DEPLOY_KEY" | base64 -d | tr -d '\r' | ssh-add -
-    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
-    - ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
-    - git config --global user.name  "${GIT_CI_USER_NAME:-SiFli CI}"
-    - git config --global user.email "${GIT_CI_USER_EMAIL:-ci@sifli.com}"
+    # Full history is required: a shallow clone cannot be pushed reliably, and
+    # tags are only present locally with a full clone.
+    GIT_DEPTH: "0"
   script:
+    - set -eu
+    - |
+      if [ -z "${GITHUB_DEPLOY_KEY:-}" ]; then
+        echo "GITHUB_DEPLOY_KEY is required" >&2
+        exit 1
+      fi
+      if [ -z "${GITHUB_REPO:-}" ]; then
+        echo "GITHUB_REPO is required" >&2
+        exit 1
+      fi
+    # Mirror the branch this pipeline runs on; SYNC_BRANCH can override the name.
     - export TARGET_BRANCH="${SYNC_BRANCH:-$CI_COMMIT_REF_NAME}"
     - echo "Source (GitLab) branch = $CI_COMMIT_REF_NAME"
     - echo "Target (GitHub) branch = $TARGET_BRANCH @ $GITHUB_REPO"
+    # Use the deploy key as a plain identity file. No ssh-agent and no
+    # ssh-keyscan, which can hang for a long time on a slow network.
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - printf "%s" "$GITHUB_DEPLOY_KEY" | base64 -d | tr -d '\r' > ~/.ssh/id_rsa_github
+    - chmod 600 ~/.ssh/id_rsa_github
+    - printf "Host github.com\n  IdentityFile ~/.ssh/id_rsa_github\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n" >> ~/.ssh/config
     - git remote add github "git@github.com:${GITHUB_REPO}.git" 2>/dev/null
         || git remote set-url github "git@github.com:${GITHUB_REPO}.git"
-    # Fetch the target so --force-with-lease has a baseline.
+    # Fetch only the target branch: this gives --force-with-lease its baseline
+    # without downloading every branch on GitHub.
     - git fetch github "$TARGET_BRANCH" || echo "(remote branch may not exist yet, ok)"
     # Push. --force-with-lease fails instead of blindly overwriting if GitHub moved.
     - git push github "HEAD:$TARGET_BRANCH" --force-with-lease
+    # Sync the tags that belong to the pushed commit's history. for-each-ref
+    # peels both lightweight and annotated tags down to their commits, so tags
+    # from other branches are left alone.
+    - |
+      branch_tags="$(git for-each-ref --format='%(refname)' --merged HEAD refs/tags)"
+      if [ -n "$branch_tags" ]; then
+        echo "Pushing tags to GitHub..."
+        git push github $branch_tags
+      else
+        echo "No tags to push."
+      fi
     - echo "Sync to github:${GITHUB_REPO} branch $TARGET_BRANCH completed"
   rules:
     # Pipeline auto-created on push to main: sync is an optional manual job.
     - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == "main"'
       when: manual
       allow_failure: true
-    # Web "Run pipeline": same optional manual job.
+    # Web "Run pipeline": same optional manual job. Select any branch there to
+    # mirror that branch.
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
       allow_failure: true

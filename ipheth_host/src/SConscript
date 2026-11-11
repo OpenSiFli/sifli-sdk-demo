@@ -1,0 +1,49 @@
+import os
+from building import *
+
+cwd = GetCurrentDir()
+path = [cwd]
+
+# Add source code
+src = Glob('*.c')
+
+# --- iPhone lockdown Pair 
+pair_dir = os.path.join(cwd, 'pairing')
+src += Glob('pairing/*.c')
+path += [pair_dir]
+
+mbedtls_dir = os.path.normpath(os.path.join(cwd, '..', '..', '..', '..', '..',
+                                           'external', 'mbedtls'))
+if os.path.isdir(mbedtls_dir):
+    mbedtls_files = [
+        'library/platform.c',
+        'library/md.c',
+        'library/md_wrap.c',
+        'library/sha256.c',
+        'library/sha1.c',
+        'library/sha512.c',
+        'library/bignum.c',
+        'library/oid.c',
+        'library/asn1parse.c',
+        'library/asn1write.c',
+        'library/pk.c',
+        'library/pkparse.c',
+        'library/pkwrite.c',
+        'library/pk_wrap.c',
+        'library/rsa.c',
+        'library/x509.c',
+        'library/x509_create.c',
+        'library/x509write_crt.c',
+    ]
+    src += [os.path.join(mbedtls_dir, f) for f in mbedtls_files]
+    path += [os.path.join(mbedtls_dir, 'include')]
+else:
+    print('[iph_pair] WARNING: mbedtls not found at %s' % mbedtls_dir)
+
+mbedtls_cfg = os.path.join(pair_dir, 'iph_mbedtls_config.h').replace('\\', '/')
+local_flags = ' -include "%s"' % mbedtls_cfg
+
+group = DefineGroup('Applications', src, CPPPATH = path,
+                    LOCAL_CCFLAGS = local_flags, depend = [''])
+
+Return('group')

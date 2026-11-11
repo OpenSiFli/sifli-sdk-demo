@@ -18,7 +18,7 @@
  *     (@ref screen_cast_proto.c).
  *
  * The link, the message layout, the response builders and the supervision
- * timer are provided by `middleware/proto_v3` (`CONFIG_PROTO_V3`). The
+ * timer are provided by `middleware/framed_proto` (`CONFIG_FRAMED_PROTO`). The
  * firmware-update engine is not involved, so this example builds with
  * `CONFIG_BSP_USING_DFU` turned off.
  *
@@ -67,7 +67,7 @@ extern "C" {
  * @brief Initialise the screen cast service.
  *
  * Initialises the frame buffers and registers the cast callback with the
- * OTA V3 channel (@ref proto_v3_set_handler). Requires `CONFIG_PROTO_V3`,
+ * OTA V3 channel (@ref framed_proto_set_handler). Requires `CONFIG_FRAMED_PROTO`,
  * not the firmware-update engine.
  * Transport independent: call it once at application startup, before any
  * transport (BLE / WiFi) can deliver cast data.

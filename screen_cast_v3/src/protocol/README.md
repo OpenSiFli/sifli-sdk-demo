@@ -1,10 +1,11 @@
-# cast — 投屏接收服务
+# screen_cast — 投屏接收服务
 
-`cast` 是本 demo 自带的**投屏接收组件**，位于 `src/cast/`：
+`screen_cast` 是本例程自带的**投屏接收组件**，位于 `src/protocol/`：
 把手机 App 推送的实时画面流（地图导航、相机预览、屏幕镜像等）解协议、解复用为
 可消费的帧，供应用层渲染。
 
-它不依赖任何具体 App 或界面，只依赖 BLE serial-transmission 与 LVGL 的 `app_mem` 内存接口。
+它不依赖任何具体 App 或界面，只依赖 `middleware/framed_proto` 与 LVGL 的 `app_mem`
+内存接口（`CONFIG_PKG_USING_LITTLEVGL2RTT`）。
 
 ## 分层
 
@@ -12,8 +13,8 @@
 手机 App
         │  BLE serial-transmission / SPP / PAN / WiFi，category 0x01
         ▼
-middleware/proto_v3/     ← 协议组件：分帧、收发、超时监督、响应构造
-        │                   proto_v3_handler_t::on_msg
+middleware/framed_proto/     ← 协议组件：分帧、收发、超时监督、响应构造
+        │                   framed_proto_handler_t::on_msg
         ▼
 screen_cast_proto.c      ← 消息分发与应答（40/43/45/47/51/53/59/36）
         ▼
@@ -22,8 +23,8 @@ screen_cast_proc.c       ← 帧解复用 + 每类型环形缓冲（JPEG / MP3 /
 src/screen_cast_ui.c     ← 应用层，只负责渲染
 ```
 
-协议组件不在本组件内：`middleware/proto_v3` 只负责把消息搬进搬出，不理解业务含义；
-本组件负责解析具体消息并组织应答。配置上只依赖 `CONFIG_PROTO_V3`。
+协议组件不在本组件内：`middleware/framed_proto` 只负责把消息搬进搬出，不理解业务含义；
+本组件负责解析具体消息并组织应答。配置上依赖 `CONFIG_FRAMED_PROTO`。
 
 | 文件 | 职责 | 是否可复用 |
 |------|------|-----------|
@@ -39,7 +40,7 @@ src/screen_cast_ui.c     ← 应用层，只负责渲染
 [u16 message_id (LE)][u16 length (LE)][data ...]
 ```
 
-使用到的 OTA-V3 报文（`dfu_protocol_msg_id_t` 子集）：
+涉及的 OTA-V3 报文（`framed_proto_msg_id_t` 子集）：
 
 | id | 报文 | 方向 |
 |----|------|------|
@@ -76,16 +77,19 @@ JSON 字段：`roadName / distance / speed / remainTime / remainDistance / remai
 ## 配置
 
 ```
-CONFIG_OTA_EXT_V3=y                 # 启用 solution2.0 的 OTA V3 协议引擎（必选）
-CONFIG_USING_SCREEN_CAST=y          # 依赖 BSP_BLE_SERIAL_TRANSMISSION + PKG_USING_LITTLEVGL2RTT
+CONFIG_FRAMED_PROTO=y                # 必选：分帧、收发、超时监督、响应构造
+CONFIG_USING_SCREEN_CAST=y           # 投屏组件（depends on FRAMED_PROTO && PKG_USING_LITTLEVGL2RTT）
+CONFIG_USING_SCREEN_CAST_WIFI=y      # 可选：WiFi（P2P GO + TCP）通道
 ```
+
+以上开关默认已在 `project/proj.conf` 中配置，WiFi 相关开关默认注释掉。
 
 ## 应用接口
 
 ```c
 #include "screen_cast.h"
 
-screen_cast_init();                                    // BLE 上电后调用一次
+screen_cast_init();                                    // 应用启动时调用一次
 
 sc_frame_t *jpg = sc_frame_acquire(SC_DATA_TYPE_JPEG); // 取一帧（无则返回 NULL）
 if (jpg) {
@@ -107,9 +111,9 @@ App 扫码后直接按地址回连：
 
 ```c
 char payload[128];
-sc_build_connect_qr(payload, sizeof(payload), 840, 480, SC_CAST_TYPE_BLE);
-// -> "Tt:1;Mac:a0b1c2d3e4f5;Ql:0.2;Sz:840x480;Tp:1"
-lv_qrcode_set_data(qr_obj, payload);
+sc_build_connect_qr(payload, sizeof(payload), 832, 480, SC_CAST_TYPE_BLE);
+// -> "Tt:1;Mac:a0b1c2d3e4f5;Ql:0.2;Sz:832x480;Tp:1"
+sc_qr_set_text(qr_obj, payload);   // qr_obj 由 src/sc_qr.c 的 sc_qr_create() 创建
 ```
 
 | 字段 | 含义 |
@@ -134,14 +138,16 @@ screen_cast_notify_disconnect();   // BLE 断开时调用，结束后回到扫�
 ## 命令行
 
 ```
-sc_cast rsp_freq <n>   # 调整应答频率
-sc_cast log <0|1>      # 打开/关闭帧率统计日志
-sc_cast mode <n>       # 设置反向请求模式
+sc_cast log <0|1>            # 帧率统计日志开关
+sc_cast dump <0|1>           # 每帧输出大小与 CRC32
+sc_cast raw [type] [count]   # 导出原始帧（0=JPEG 1=MP3 2=EZIP 3=NAV_INFO 4=CAMERA_INFO）
+sc_cast rsp_freq <n>         # 调整应答频率（下次会话初始化时生效）
+sc_cast mode <n>             # 反向请求模式：3=拍照 4=开始录像 5=停止录像
 ```
 
 ## 可移植性
 
-- 换渲染：直接使用 `screen_cast_proc.h` 的帧 API，或替换
-  `example/ble/screen_cast/src/screen_cast_ui.c`。
+- 换渲染：直接使用 `screen_cast_proc.h` 的帧 API，或替换 `src/screen_cast_ui.c`。
 - 换传输（SPP / PAN / WiFi）：上层接口不变，只需在 `screen_cast_proto.c` 中按需应答
-  新的 OTA-V3 事件，并把二维码的 `Tt` 字段改成对应位掩码。
+  新的 OTA-V3 事件，并把二维码的 `Tt` 字段改成对应位掩码。WiFi 通道的实现见
+  `src/wifi_tran/ota_wifi_tran.c`。

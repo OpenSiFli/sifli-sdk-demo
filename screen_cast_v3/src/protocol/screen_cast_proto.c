@@ -13,7 +13,7 @@
  * (@ref screen_cast_proc.h) and keeps the supervision timer alive while frames
  * are arriving.
  *
- * It talks to middleware/proto_v3 only - link, message layout, response
+ * It talks to middleware/framed_proto only - link, message layout, response
  * builders and supervision all live there. Nothing from the firmware-update
  * engine is referenced, which is what lets this example build with
  * CONFIG_BSP_USING_DFU turned off.
@@ -24,9 +24,9 @@
 #include <rtthread.h>
 #include <string.h>
 
-#include "proto_v3.h"
-#include "proto_v3_msg.h"
-#include "proto_v3_link.h"
+#include "framed_proto.h"
+#include "framed_proto_msg.h"
+#include "framed_proto_link.h"
 
 #include "bf0_ble_gap.h"
 
@@ -105,7 +105,7 @@ static void sc_proto_version_request(uint8_t *data, uint16_t len)
 
     sc_proc_on_version(req.ota_version);
 
-    proto_v3_rsp_version(PROTO_V3_RESULT_OK, 0);
+    framed_proto_rsp_version(FRAMED_PROTO_RESULT_OK, 0);
 }
 
 /* -------------------------------------------------------------------------
@@ -128,7 +128,7 @@ static uint16_t sc_proto_stream_packet_len(uint8_t phone_type)
     if (phone_type == SC_PHONE_TYPE_BT_PAN)
     {
 
-        if (ble_serial_tran_type_get() == SERIAL_TRANS_TYPE_WIFI)
+        if (framed_proto_link_type_get() == FRAMED_PROTO_LINK_WIFI)
         {
             return SC_PKT_LEN_CONTINUAL_WIFI;
         }
@@ -151,7 +151,7 @@ static uint8_t sc_proto_num_of_rsp_bin(uint8_t phone_type)
     }
 
 #ifdef BSP_BLE_SERIAL_TRANSMISSION
-    if (ble_serial_tran_type_get() == SERIAL_TRANS_TYPE_SPP)
+    if (framed_proto_link_type_get() == FRAMED_PROTO_LINK_SPP)
     {
         num = SC_NUM_OF_RSP_BIN_SPP_NOR;
     }
@@ -165,16 +165,16 @@ static uint8_t sc_proto_num_of_rsp_bin(uint8_t phone_type)
 static uint8_t sc_proto_remap_phone_type(uint8_t phone_type)
 {
 #ifdef BSP_BLE_SERIAL_TRANSMISSION
-    uint8_t tran_type = ble_serial_tran_type_get();
+    uint8_t tran_type = framed_proto_link_type_get();
 
     if ((phone_type == SC_PHONE_TYPE_ANDROID || phone_type == SC_PHONE_TYPE_DEVICE)
-            && tran_type == SERIAL_TRANS_TYPE_SPP)
+            && tran_type == FRAMED_PROTO_LINK_SPP)
     {
         LOG_I("using spp");
         return SC_PHONE_TYPE_ANDROID_SPP;
     }
 
-    if (tran_type == SERIAL_TRANS_TYPE_PAN || tran_type == SERIAL_TRANS_TYPE_WIFI)
+    if (tran_type == FRAMED_PROTO_LINK_PAN || tran_type == FRAMED_PROTO_LINK_WIFI)
     {
         LOG_I("using pan");
         return SC_PHONE_TYPE_BT_PAN;
@@ -186,7 +186,7 @@ static uint8_t sc_proto_remap_phone_type(uint8_t phone_type)
 
 static void sc_proto_file_init_request(uint8_t *data, uint16_t len)
 {
-    proto_v3_rsp_file_init_t rsp;
+    framed_proto_rsp_file_init_t rsp;
     uint8_t phone_type;
     uint8_t file_align;
 
@@ -205,7 +205,7 @@ static void sc_proto_file_init_request(uint8_t *data, uint16_t len)
     g_sc.file_aligned = file_align;
 
     memset(&rsp, 0, sizeof(rsp));
-    rsp.result = PROTO_V3_RESULT_OK;
+    rsp.result = FRAMED_PROTO_RESULT_OK;
     rsp.resume_state = 0;
     rsp.resume_index = 0;
     rsp.fs_block = 0;
@@ -217,13 +217,13 @@ static void sc_proto_file_init_request(uint8_t *data, uint16_t len)
     LOG_I("file init phone %d, rsp file %d, pkt %d", phone_type,
           rsp.num_of_rsp_file, rsp.packet_length_file);
 
-    proto_v3_rsp_file_init(&rsp);
+    framed_proto_rsp_file_init(&rsp);
 }
 
 static void sc_proto_file_init_completed(void)
 {
     g_sc.is_lose_check = 0;
-    proto_v3_rsp_file_init_completed(PROTO_V3_RESULT_OK, 0);
+    framed_proto_rsp_file_init_completed(FRAMED_PROTO_RESULT_OK, 0);
 }
 
 /* -------------------------------------------------------------------------
@@ -253,9 +253,9 @@ static void sc_proto_file_start_request(uint8_t *data, uint16_t len)
     sc_proc_file_start();
 
 
-    proto_v3_sync_start(PROTO_V3_SYNC_CONTINUAL_FILE);
+    framed_proto_sync_start(FRAMED_PROTO_SYNC_CONTINUAL_FILE);
 
-    proto_v3_rsp_file_start(PROTO_V3_RESULT_OK);
+    framed_proto_rsp_file_start(FRAMED_PROTO_RESULT_OK);
 }
 
 static void sc_proto_continual_packet(uint8_t *data, uint16_t len)
@@ -306,8 +306,8 @@ static void sc_proto_continual_packet(uint8_t *data, uint16_t len)
 
     /* A frame arrives every few tens of milliseconds; anything longer than the
      * supervision timeout means the phone went away. */
-    proto_v3_sync_end();
-    proto_v3_sync_start(PROTO_V3_SYNC_CONTINUAL_FILE);
+    framed_proto_sync_end();
+    framed_proto_sync_start(FRAMED_PROTO_SYNC_CONTINUAL_FILE);
 
     recv.packet_data = data + SC_CONTINUAL_PKT_HEAD_LEN;
     recv.packet_len = data_len;
@@ -326,12 +326,12 @@ static void sc_proto_continual_packet(uint8_t *data, uint16_t len)
 
         if (mode != 0)
         {
-            proto_v3_rsp_continual_mode(mode, 0, 0);
+            framed_proto_rsp_continual_mode(mode, 0, 0);
             sc_set_switch_mode(0);
         }
         else
         {
-            proto_v3_rsp_file_packet(PROTO_V3_RESULT_OK, 0);
+            framed_proto_rsp_file_packet(FRAMED_PROTO_RESULT_OK, 0);
         }
     }
 }
@@ -353,70 +353,70 @@ static void sc_proto_file_end_request(uint8_t *data, uint16_t len)
         return;
     }
 
-    proto_v3_sync_end();
+    framed_proto_sync_end();
 
     sc_proc_file_end();
 
-    proto_v3_rsp_file_end(PROTO_V3_RESULT_OK);
+    framed_proto_rsp_file_end(FRAMED_PROTO_RESULT_OK);
 }
 
 static void sc_proto_total_end_request(void)
 {
     sc_proc_session_end();
 
-    proto_v3_rsp_file_total_end(PROTO_V3_RESULT_OK);
+    framed_proto_rsp_file_total_end(FRAMED_PROTO_RESULT_OK);
 }
 
 /* -------------------------------------------------------------------------
  * Link callbacks
  * ---------------------------------------------------------------------- */
 
-static void sc_proto_on_msg(proto_v3_msg_t *msg, uint16_t buf_len)
+static void sc_proto_on_msg(framed_proto_msg_t *msg, uint16_t buf_len)
 {
     (void)buf_len;
 
     switch (msg->message_id)
     {
-    case PROTO_V3_VERSION_REQUEST:
+    case FRAMED_PROTO_VERSION_REQUEST:
     {
         sc_proto_version_request(msg->data, msg->length);
         break;
     }
-    case PROTO_V3_FILE_INIT_REQUEST:
+    case FRAMED_PROTO_FILE_INIT_REQUEST:
     {
         sc_proto_file_init_request(msg->data, msg->length);
         break;
     }
-    case PROTO_V3_FILE_INIT_COMPLETED_REQUEST:
+    case FRAMED_PROTO_FILE_INIT_COMPLETED_REQUEST:
     {
         sc_proto_file_init_completed();
         break;
     }
-    case PROTO_V3_FILE_START_REQUEST:
+    case FRAMED_PROTO_FILE_START_REQUEST:
     {
         sc_proto_file_start_request(msg->data, msg->length);
         break;
     }
-    case PROTO_V3_FILE_CONTINUAL_PACKET:
+    case FRAMED_PROTO_FILE_CONTINUAL_PACKET:
     {
         sc_proto_continual_packet(msg->data, msg->length);
         break;
     }
-    case PROTO_V3_FILE_END_REQUEST:
+    case FRAMED_PROTO_FILE_END_REQUEST:
     {
         sc_proto_file_end_request(msg->data, msg->length);
         break;
     }
-    case PROTO_V3_FILE_TOTAL_END_REQUEST:
+    case FRAMED_PROTO_FILE_TOTAL_END_REQUEST:
     {
         sc_proto_total_end_request();
         break;
     }
-    case PROTO_V3_LINK_LOSE_CHECK_RSP:
+    case FRAMED_PROTO_LINK_LOSE_CHECK_RSP:
     {
         /* The peer answered our supervision request; the link is alive. */
         g_sc.is_lose_check = 0;
-        proto_v3_sync_end();
+        framed_proto_sync_end();
         break;
     }
     default:
@@ -429,21 +429,21 @@ static void sc_proto_on_msg(proto_v3_msg_t *msg, uint16_t buf_len)
 
 static void sc_proto_on_close(void)
 {
-    proto_v3_sync_end();
+    framed_proto_sync_end();
     g_sc.is_lose_check = 0;
     sc_proc_session_end();
 }
 
 static void sc_proto_on_error(uint8_t error)
 {
-    proto_v3_sync_end();
+    framed_proto_sync_end();
 
 #ifdef BSP_BLE_SERIAL_TRANSMISSION
     if (error == BLE_SERIAL_TRAN_ERROR_ASSEMBLE_ERROR
             || error == BLE_SERIAL_TRAN_ERROR_ASSEMBLE_OVER_LEN)
     {
         g_sc.is_lose_check = 1;
-        proto_v3_rsp_continual_error(SC_SERIAL_TRANS_ERROR_ASSEMABLE);
+        framed_proto_rsp_continual_error(SC_SERIAL_TRANS_ERROR_ASSEMABLE);
     }
 #else
     (void)error;
@@ -460,32 +460,32 @@ static void sc_proto_on_tx_done(void)
 /* The supervision timer fired: the phone stopped in the middle of a frame. */
 static void sc_proto_on_sync_timeout(uint8_t sync_type)
 {
-    if (sync_type == PROTO_V3_SYNC_CONTINUAL_FILE)
+    if (sync_type == FRAMED_PROTO_SYNC_CONTINUAL_FILE)
     {
         LOG_W("frame stream went quiet");
 
-        proto_v3_sync_end();
+        framed_proto_sync_end();
         g_sc.is_lose_check = 1;
 
-        proto_v3_rsp_continual_error(SC_SERIAL_TRANS_ERROR_ASSEMABLE);
+        framed_proto_rsp_continual_error(SC_SERIAL_TRANS_ERROR_ASSEMABLE);
         sc_proc_on_packet_error();
 
         /* Give the phone a longer window to pick the stream back up. */
-        proto_v3_sync_start(PROTO_V3_SYNC_CONTINUAL_FILE_LOST);
+        framed_proto_sync_start(FRAMED_PROTO_SYNC_CONTINUAL_FILE_LOST);
         return;
     }
 
-    if (sync_type == PROTO_V3_SYNC_CONTINUAL_FILE_LOST)
+    if (sync_type == FRAMED_PROTO_SYNC_CONTINUAL_FILE_LOST)
     {
         LOG_W("frame stream remote lost");
 
-        proto_v3_sync_end();
+        framed_proto_sync_end();
         g_sc.is_lose_check = 0;
         sc_proc_err();
     }
 }
 
-static const proto_v3_handler_t g_sc_proto_handler =
+static const framed_proto_handler_t g_sc_proto_handler =
 {
     .on_msg     = sc_proto_on_msg,
     .on_close   = sc_proto_on_close,
@@ -513,7 +513,7 @@ static uint8_t sc_proto_is_stream(void)
     return 1;
 }
 
-static const proto_v3_sink_t g_sc_proto_sink =
+static const framed_proto_sink_t g_sc_proto_sink =
 {
     .on_file_data = sc_proto_on_file_data,
     .on_install = sc_proto_on_install,
@@ -529,9 +529,9 @@ void screen_cast_init(void)
     rt_memset(&g_sc, 0, sizeof(g_sc));
     sc_proc_init();
 
-    proto_v3_set_handler(&g_sc_proto_handler);
-    proto_v3_set_sink(&g_sc_proto_sink);
-    proto_v3_sync_set_timeout_cb(sc_proto_on_sync_timeout);
+    framed_proto_set_handler(&g_sc_proto_handler);
+    framed_proto_set_sink(&g_sc_proto_sink);
+    framed_proto_sync_set_timeout_cb(sc_proto_on_sync_timeout);
 
     LOG_I("screen cast bound to the V3 protocol component");
 }

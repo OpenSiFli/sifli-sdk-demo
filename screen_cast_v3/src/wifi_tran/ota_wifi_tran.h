@@ -15,10 +15,10 @@
  *
  *   [0x53454346][u32 len][u8 cateID][3B reserve][len bytes data][u32 crc]
  *
- * Received frames are handed to the proto_v3 transport layer:
- *   proto_v3_rx_frame(cate_id, payload, len)   (middleware/proto_v3)
+ * Received frames are handed to the framed_proto transport layer:
+ *   framed_proto_rx_frame(cate_id, payload, len)   (middleware/framed_proto)
  * The transmit direction calls back through the weak hook
- * ota_ext_pan_send_data().
+ * framed_proto_pan_send_data().
  */
 
 #ifndef OTA_WIFI_TRAN_H
@@ -47,7 +47,7 @@ int ota_wifi_tran_start(const char *ssid, const char *pwd, uint16_t port);
 int ota_ext_start_listen(const char *ip, const char *port);
 
 /** @brief Send one already framed block; called back by the serial-transmission service. */
-int ota_ext_pan_send_data(const void *data, uint32_t data_len);
+int framed_proto_pan_send_data(const void *data, uint32_t data_len);
 
 /** @brief Close the current TCP connection, keeping the listener for a reconnect. */
 int ota_ext_pan_close(void);

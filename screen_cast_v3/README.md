@@ -20,7 +20,7 @@
 ## 目录结构
 
 ```text
-screen_cast/
+screen_cast_v3/
 ├─ project/              构建工程（SConstruct / proj.conf / Kconfig.proj）
 └─ src/
    ├─ protocol/          协议处理：消息分发与应答、帧解复用
@@ -38,7 +38,7 @@ screen_cast/
 
 | 配置项 | 作用 |
 |---|---|
-| `CONFIG_PROTO_V3` | 协议组件（分帧、收发、超时监督） |
+| `CONFIG_FRAMED_PROTO` | 协议组件（分帧、收发、超时监督） |
 | `CONFIG_BLUETOOTH` | 蓝牙总开关 |
 | `CONFIG_BSP_BLE_SERIAL_TRANSMISSION` | BLE 串行传输（投屏数据通道） |
 | `CONFIG_USING_SCREEN_CAST` | 投屏服务（定义于 `src/protocol/Kconfig`） |

@@ -23,8 +23,8 @@
 
 #include <wlan_mgnt.h>
 #include <board.h>
-#include "proto_v3_link.h"
-#include "proto_v3.h"
+#include "framed_proto_link.h"
+#include "framed_proto.h"
 
 #include <lwip/sockets.h>
 #include <lwip/netdb.h>
@@ -139,10 +139,10 @@ static void wifi_tran_dispatch_frame(net_packet_t *frame)
     if (calc_crc != remote_crc)
     {
         LOG_E("frame crc error 0x%x, 0x%x", calc_crc, remote_crc);
-        proto_v3_rx_error(BLE_SERIAL_TRAN_ERROR_DATA_ERROR);
+        framed_proto_rx_error(FRAMED_PROTO_LINK_DATA_ERROR);
         return;
     }
-    proto_v3_rx_frame(cate_id, frame->data + 12, data_len);
+    framed_proto_rx_frame(cate_id, frame->data + 12, data_len);
 }
 
 static void tran_env_init(ota_wifi_tran_env_t *env)
@@ -528,19 +528,19 @@ static void ota_ext_pan_accept_entry(void *parameter)
 }
 
 /* Used by the protocol engine to tell whether the TCP channel is up
- * (see middleware/proto_v3/proto_v3_link.c) */
-uint8_t ota_ext_pan_is_active(void)
+ * (see middleware/framed_proto/framed_proto_link.c) */
+uint8_t framed_proto_pan_is_active(void)
 {
     return (g_wifi_tran_env.sockfd >= 0) ? 1 : 0;
 }
 
 
-uint8_t ota_ext_is_wifi(void)
+uint8_t framed_proto_pan_is_wifi(void)
 {
     return 1;
 }
 
-int ota_ext_pan_send_data(const void *data, uint32_t data_len)
+int framed_proto_pan_send_data(const void *data, uint32_t data_len)
 {
     ota_wifi_tran_env_t *env = wifi_tran_get_env();
     int ret;
@@ -625,7 +625,7 @@ static int ota_ext_pan_close_internal(bool close_listener)
 
     /* Notify the upper layer outside the lock (the protocol callback may enter
      * the transmit path) */
-    proto_v3_rx_closed();
+    framed_proto_rx_closed();
     LOG_I("close_listener %d", close_listener);
     return 0;
 }

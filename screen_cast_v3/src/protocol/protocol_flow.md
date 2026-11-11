@@ -2,12 +2,12 @@
 
 > 一次投屏会话的完整报文流程（40 → 54）：报文格式、hex 示例、设备侧处理路径。
 >
-> - 协议组件：`middleware/proto_v3/`（分帧、收发、超时监督、响应构造）
+> - 协议组件：`middleware/framed_proto/`（分帧、收发、超时监督、响应构造）
 > - 应用绑定：`src/protocol/screen_cast_proto.c`（解析消息、组织应答）
 > - 帧处理：`src/protocol/screen_cast_proc.c`
 > - 传输层：BLE serial-transmission（cateID = `0x01`，外层 GATT 帧 flag=0 表示单包）
 >
-> 配置依赖：`CONFIG_PROTO_V3`。
+> 配置依赖：`CONFIG_FRAMED_PROTO`。
 
 ## 0. 流程总览
 
@@ -21,13 +21,13 @@
 | 6 | 59 / 50·60·61 | `sc_proto_continual_packet()` | 数据洪流 + 应答 |
 | 7 | 51 / 52 | `sc_proto_file_end_request()` | 本路文件结束 |
 | 8 | 53 / 54 | `sc_proto_total_end_request()` | 整个会话结束 |
-| 异常 | —（监督超时） | `sc_proto_on_sync_timeout()` | 手机不道别时的收尾 |
+| 异常 | —（监督超时） | `sc_proto_on_sync_timeout()` | 手机未正常结束时的收尾 |
 
 ```text
 screen_cast_init()
-  ├─ proto_v3_set_handler(&g_sc_proto_handler)      // on_msg / on_close / on_error / on_tx_done
-  ├─ proto_v3_set_sink(&g_sc_proto_sink)            // 投屏流程不读取
-  └─ proto_v3_sync_set_timeout_cb(sc_proto_on_sync_timeout)
+  ├─ framed_proto_set_handler(&g_sc_proto_handler)      // on_msg / on_close / on_error / on_tx_done
+  ├─ framed_proto_set_sink(&g_sc_proto_sink)            // 投屏流程不读取
+  └─ framed_proto_sync_set_timeout_cb(sc_proto_on_sync_timeout)
 
 40 → 41 →（42 忽略）→ 43 → 44 → 45 → 46 → 47 → 48 → 59×N → 50×（每 N 包）→ 51 → 52 → 53 → 54
 ```
@@ -53,7 +53,7 @@ screen_cast_init()
 | 字节 | 字段 | 值 | 说明 |
 |---|---|---|---|
 | `01` | cateID | 0x01 | serial-trans 类别 |
-| `00` | flag | 0 | 单包（whole） |，
+| `00` | flag | 0 | 单包（whole） |
 | `08 00` | len | 8 | 本帧总长（layer2） |
 | `28 00` | msg_id | 40 | VERSION_REQUEST |
 | `04 00` | length | 4 | 载荷长度 |
@@ -62,11 +62,11 @@ screen_cast_init()
 
 ### 1.2 设备解析
 
-- 路由：`proto_v3_rx_frame()` → `g_sc_proto_handler.on_msg` → `sc_proto_on_msg()` → `case PROTO_V3_VERSION_REQUEST:` → `sc_proto_version_request()`
+- 路由：`framed_proto_rx_frame()` → `g_sc_proto_handler.on_msg` → `sc_proto_on_msg()` → `case FRAMED_PROTO_VERSION_REQUEST:` → `sc_proto_version_request()`
 - 两个存档（存在 `g_sc` 里）：
   - `g_sc.remote_version = 6` —— 后面决定兼容行为；
   - `g_sc.type = 17` —— 后续按“视频流”处理。
-- 先后调 `sc_proc_on_version(6)` 同步给帧处理层，再用 `proto_v3_rsp_version(PROTO_V3_RESULT_OK, 0)` 组装 41 发给手机。
+- 先后调 `sc_proc_on_version(6)` 同步给帧处理层，再用 `framed_proto_rsp_version(FRAMED_PROTO_RESULT_OK, 0)` 组装 41 发给手机。
   **没有事件，也没有回调注册**，就是一个直接调用。
 - `sc_proc_on_version()` 的作用：`support_camera_info = (remote_version & 0xff) >= 4`，
   即手机协议版本 ≥ 4 才接受 CAMERA_INFO 帧。
@@ -82,7 +82,6 @@ screen_cast_init()
 | `00` | need_reboot | 0 | 投屏无需重启 |
 | `00` | （填充） | 0 | `{u16,u16,u8}` 尾部补齐到 2 字节倍数 |
 
-
 ## 2. 前置准备（42）
 
 | 字节 | 字段 | 值 | 说明 |
@@ -91,7 +90,7 @@ screen_cast_init()
 | `01 00` | len | 1 | 载荷长度 |
 | `00` | is_reboot | 0 | 投屏时=0（=1 时设备直接重启） |
 
-- `sc_proto_on_msg()` 的 switch 里没有 `PROTO_V3_REBOOT_COMMAND` 分支，会落到 `default`
+- `sc_proto_on_msg()` 的 switch 里没有 `FRAMED_PROTO_REBOOT_COMMAND` 分支，会落到 `default`
   打一行 `ignore message 42` 然后丢弃
 - 投屏场景手机固定发 `is_reboot=0`，设备无需回应
 
@@ -178,7 +177,6 @@ screen_cast_init()
 | `24 02` | packet_length_bin | 548 | 本流程不使用 |
 | `00 00` | （填充） | 0 | 含 `u32` 的结构体按 4B 对齐，尾部补齐 18→20 |
 
-
 ## 4. 初始化完成确认（45 / 46）
 
 ### 4.1 手机 → 设备：FILE_INIT_COMPLETED_REQUEST（msg 45，0x2D）
@@ -194,7 +192,7 @@ screen_cast_init()
 ### 4.2 设备处理 + 46 应答
 
 直接调 `sc_proto_file_init_completed()`：把 `g_sc.is_lose_check` 清零，然后
-`proto_v3_rsp_file_init_completed(PROTO_V3_RESULT_OK, 0)` 回 OK。没有其它副作用。
+`framed_proto_rsp_file_init_completed(FRAMED_PROTO_RESULT_OK, 0)` 回 OK。没有其它副作用。
 
 **45 请求：**
 
@@ -244,10 +242,10 @@ screen_cast_init()
 
 1. 只读载荷前 2 字节 `file_type`，不是 `RES` / `RES_WITHOUT_PATH` 就报 `unexpected file type` 并返回；
 2. `sc_proc_file_start()` 进入投屏模式（内部置 `g_casting = true` 并初始化收帧缓冲）；
-3. 启动监督定时器：`proto_v3_sync_start(PROTO_V3_SYNC_CONTINUAL_FILE)`（所有链路一致）；
-4. `proto_v3_rsp_file_start(PROTO_V3_RESULT_OK)` 发送 48。
+3. 启动监督定时器：`framed_proto_sync_start(FRAMED_PROTO_SYNC_CONTINUAL_FILE)`（所有链路一致）；
+4. `framed_proto_rsp_file_start(FRAMED_PROTO_RESULT_OK)` 发送 48。
 
-> 48 只是纯应答，不重置任何计数。连接提速接口 `proto_v3_request_connection_priority()` 目前没有调用。
+> 48 只是纯应答，不重置任何计数。连接提速接口 `framed_proto_request_connection_priority()` 目前没有调用。
 > 监督定时器在 47 启动，每个 59 包到达时重启（见 6.2），51 停止。
 
 ### 5.3 hex 举例
@@ -293,7 +291,7 @@ screen_cast_init()
 |---|---|---|---|
 | 0 | 4 | `file_length` | 本帧总长（含 10B 业务头；对齐时含 CRC+填充） |
 | 4 | 4 | `index` | 包在本帧内的序号，从 1 开始（index==1 = 新一帧的第一包） |
-| 8 | 2 | `data_length` | 本包数据长度，≤ 44 报文协商值（BLE 4096 / iOS旧 1024 / SPP·PAN 10240 / WiFi 20480） |
+| 8 | 2 | `data_length` | 本包数据长度，≤ 43/44 报文协商值（BLE 4096 / iOS旧 1024 / SPP·PAN 10240 / WiFi 20480） |
 | 10 | 1 | `type` | 0=WHOLE 整帧一包 / 1=START / 2=MIDDLE / 3=ENDING |
 | 11 | 1 | `reserved` | bit0=`need_rsp`（要 50 应答）；bit1=`new_packet`（丢包恢复标志） |
 | 12 | N | `data` | 帧数据切片（帧第一个包的 data 以 10B 业务头开始，见下） |
@@ -321,13 +319,13 @@ screen_cast_init()
    need_rsp = reserved & 1;  new_packet = (reserved & 2) >> 1;
 3. 丢包恢复：g_sc.is_lose_check 为真时，new_packet==0 的包全部丢弃
 4. 越界检查：12 + data_len > len 则报错返回
-5. 复位监督定时器：proto_v3_sync_end(); proto_v3_sync_start(CONTINUAL_FILE);
+5. 复位监督定时器：framed_proto_sync_end(); framed_proto_sync_start(CONTINUAL_FILE);
 6. 填 sc_recv_t（带 file_aligned / phone_type / remote_version）
 7. sc_proc_on_packet(&recv)
 8. need_rsp 时：若 sc_get_switch_mode() 非 0 则发 61 并清标志，否则发 50
 ```
 
-> 注意第 8 步：**61 是“措着应答时机”发出去的**，不是独立触发。shell 只负责
+> 注意第 8 步：**61 是“借助应答时机”发出去的**，不是独立触发。shell 只负责
 > `sc_set_switch_mode(n)`，真正的 61 要等到下一个 `need_rsp=1` 的 59 包。
 > 且 61 与 50 是**二选一**，发 61 的那个包不回 50。
 
@@ -345,19 +343,19 @@ screen_cast_init()
 
 ### 6.3 心跳（2s / 6s）
 
-每个 59 包到达 → `proto_v3_sync_end()` + `proto_v3_sync_start(CONTINUAL_FILE)` 重启 2s 定时器。
+每个 59 包到达 → `framed_proto_sync_end()` + `framed_proto_sync_start(CONTINUAL_FILE)` 重启 2s 定时器。
 超时回调是 `sc_proto_on_sync_timeout()`：
 
 ```text
-2s 没包 → sc_proto_on_sync_timeout(PROTO_V3_SYNC_CONTINUAL_FILE):
-    proto_v3_sync_end()
+2s 没包 → sc_proto_on_sync_timeout(FRAMED_PROTO_SYNC_CONTINUAL_FILE):
+    framed_proto_sync_end()
     g_sc.is_lose_check = 1
-    proto_v3_rsp_continual_error(SC_SERIAL_TRANS_ERROR_ASSEMABLE)   // 发 60，error_type=1
+    framed_proto_rsp_continual_error(SC_SERIAL_TRANS_ERROR_ASSEMABLE)   // 发 60，error_type=1
     sc_proc_on_packet_error()                                       // 丢弃正在组装的帧
-    proto_v3_sync_start(PROTO_V3_SYNC_CONTINUAL_FILE_LOST)          // 换 6s 超时
+    framed_proto_sync_start(FRAMED_PROTO_SYNC_CONTINUAL_FILE_LOST)          // 换 6s 超时
 
-6s 还没包 → sc_proto_on_sync_timeout(PROTO_V3_SYNC_CONTINUAL_FILE_LOST):
-    proto_v3_sync_end()
+6s 还没包 → sc_proto_on_sync_timeout(FRAMED_PROTO_SYNC_CONTINUAL_FILE_LOST):
+    framed_proto_sync_end()
     g_sc.is_lose_check = 0
     sc_proc_err()          // 判定对端掉线，会话收尾
 ```
@@ -382,10 +380,9 @@ screen_cast_init()
 | 60 | `00 00` | reserved_2 | 0 | |
 | 61 | `3D 00` | msg_id | 61 | FILE_CONTINUAL_PACKET_MODE_CHANGE |
 | 61 | `06 00` | len | 6 | |
-| 61 | `03 00` | mode | 3 | 请求拍照（3=拍照/4=开始录像/5=停止录像）；由 `sc_set_switch_mode()` 设值，措下个 `need_rsp` 包发出 |
+| 61 | `03 00` | mode | 3 | 请求拍照（3=拍照/4=开始录像/5=停止录像）；由 `sc_set_switch_mode()` 设值，借助下一个 `need_rsp` 包发出 |
 | 61 | `00 00` | reserved_1 | 0 | |
 | 61 | `00 00` | reserved_2 | 0 | |
-
 
 ### 6.5 59 包 hex 举例
 
@@ -430,7 +427,7 @@ screen_cast_init()
 ### 7.2 设备处理 + 52 应答
 
 `sc_proto_file_end_request()`：先校验 `file_type` 必须是 `RES` / `RES_WITHOUT_PATH` → 停监督定时器
-→ `sc_proc_file_end()` 释放收帧缓冲 → `proto_v3_rsp_file_end(PROTO_V3_RESULT_OK)` 回 52。
+→ `sc_proc_file_end()` 释放收帧缓冲 → `framed_proto_rsp_file_end(FRAMED_PROTO_RESULT_OK)` 回 52。
 
 > 注意：此时 `g_casting` 仍为 true——二维码页要到 53/54 或异常收尾才恢复显示。
 
@@ -457,7 +454,7 @@ screen_cast_init()
 手机发 msg53 → `sc_proto_total_end_request()`：**载荷完全不解析**，只做两件事：
 
 1. `sc_proc_session_end()` —— 结束投屏会话（`g_casting` 复位、释放缓冲、二维码页回来）
-2. `proto_v3_rsp_file_total_end(PROTO_V3_RESULT_OK)` —— 发送 54
+2. `framed_proto_rsp_file_total_end(FRAMED_PROTO_RESULT_OK)` —— 发送 54
 
 **53 请求**（示例值：设备端投屏分支不解析载荷，长度/内容以手机实际发送为准）：
 
@@ -474,7 +471,7 @@ screen_cast_init()
 | `02 00` | len | 2 | 载荷长度 |
 | `00 00` | result | 0 | 成功 |
 
-## 9. 补充：异常收尾（手机不道别）
+## 9. 补充：异常收尾（手机未正常结束）
 
 手机 App 被杀/走远，没有 51/53，走监督超时线：
 
@@ -483,12 +480,12 @@ screen_cast_init()
             发 60（error_type=1），丢弃半帧，换 6s 超时继续等
 
 链路断开 → sc_proto_on_close():
-            proto_v3_sync_end()
+            framed_proto_sync_end()
             g_sc.is_lose_check = 0
             sc_proc_session_end()      ← 和正常 53 收尾走同一个出口
 
 传输报错 → sc_proto_on_error(error):
-            proto_v3_sync_end()
+            framed_proto_sync_end()
             （其余处理见下一行）
 ```
 

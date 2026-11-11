@@ -23,7 +23,5 @@ config FREETYPE_TINY_FONT_LITE
     bool "tiny55_lite (common glyph set, ~0.5MB flash)"
 endchoice
 
-
-
 # Screen cast protocol handling bundled with this demo
 rsource "../src/protocol/Kconfig"
